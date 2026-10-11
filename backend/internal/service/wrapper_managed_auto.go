@@ -323,7 +323,11 @@ func managedCanonicalAssistant(raw json.RawMessage) json.RawMessage {
 	}
 	blocks := managedHistoryBlocks(raw)
 	if blocks == nil {
-		return nil
+		content, ok := message["content"].(string)
+		if !ok {
+			return nil
+		}
+		blocks = []any{map[string]any{"type": "text", "text": content}}
 	}
 	filtered := make([]any, 0, len(blocks))
 	for _, item := range blocks {

@@ -142,7 +142,7 @@ func TestWrapperManagedAutoSeedsHistoryThenSendsOnlyFreshTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstBody := []byte(`{"model":"sonnet","stream":true,"messages":[{"role":"user","content":"old question"},{"role":"assistant","content":[{"type":"text","text":"old answer"}]},{"role":"user","content":"new question"}]}`)
+	firstBody := []byte(`{"model":"sonnet","stream":true,"messages":[{"role":"user","content":"old question"},{"role":"assistant","content":"old answer"},{"role":"user","content":"new question"}]}`)
 	wire, active, err := first.Prepare(ctx, 1, firstBody, managedTestContext())
 	if err != nil || !active || gjson.GetBytes(wire, "messages.#").Int() != 3 {
 		t.Fatalf("initial full history was not forwarded: active=%v err=%v body=%s", active, err, wire)
