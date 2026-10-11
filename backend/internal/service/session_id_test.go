@@ -111,6 +111,13 @@ func TestExtractClientSessionID_Sanitizes(t *testing.T) {
 	require.Equal(t, "clean-123", ExtractClientSessionID(c))
 }
 
+func TestExtractAnthropicUsageSessionID(t *testing.T) {
+	metadata := `{"device_id":"device-a","session_id":"550e8400-e29b-41d4-a716-446655440000"}`
+	require.Equal(t, "550e8400-e29b-41d4-a716-446655440000", ExtractAnthropicUsageSessionID(newSessionHeaderContext(t, nil), metadata))
+	require.Equal(t, "explicit-session", ExtractAnthropicUsageSessionID(newSessionHeaderContext(t, map[string]string{"session_id": "explicit-session"}), metadata))
+	require.Equal(t, "", ExtractAnthropicUsageSessionID(newSessionHeaderContext(t, nil), `{"device_id":"device-a","session_id":"invalid\nvalue"}`))
+}
+
 func TestExtractClientSessionID_IgnoresNonSessionHeaders(t *testing.T) {
 	// prompt_cache_key, request/message ids, and a Grok conversation header on a
 	// non-Grok request are NOT persisted as session_id.

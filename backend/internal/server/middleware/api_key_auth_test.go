@@ -1427,6 +1427,39 @@ func TestAPIKeyAuthRejectsExhaustedBalance(t *testing.T) {
 	requireAPIKeyAuthError(t, w, "INSUFFICIENT_BALANCE", "Insufficient account balance")
 }
 
+func TestAPIKeyAuthAllowsModelDiscoveryWithoutBalance(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	user := &service.User{ID: 10, Role: service.RoleUser, Status: service.StatusActive, Balance: 0}
+	apiKey := &service.APIKey{ID: 104, UserID: user.ID, Key: "models-zero-balance", Status: service.StatusActive, User: user}
+	repo := &stubApiKeyRepo{getByKey: func(ctx context.Context, key string) (*service.APIKey, error) {
+		if key != apiKey.Key {
+			return nil, service.ErrAPIKeyNotFound
+		}
+		clone := *apiKey
+		return &clone, nil
+	}}
+	cfg := &config.Config{RunMode: config.RunModeStandard}
+	router := gin.New()
+	router.Use(gin.HandlerFunc(NewAPIKeyAuthMiddleware(service.NewAPIKeyService(repo, nil, nil, nil, nil, nil, cfg), nil, cfg)))
+	for _, path := range []string{"/v1/models", "/models", "/v1/models/example", "/models/example"} {
+		router.GET(path, func(c *gin.Context) { c.Status(http.StatusOK) })
+	}
+	router.POST("/v1/messages", func(c *gin.Context) { c.Status(http.StatusOK) })
+	for _, path := range []string{"/v1/models", "/models", "/v1/models/example", "/models/example"} {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("x-api-key", apiKey.Key)
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code, path)
+	}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("x-api-key", apiKey.Key)
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusForbidden, w.Code)
+	requireAPIKeyAuthError(t, w, "INSUFFICIENT_BALANCE", "Insufficient account balance")
+}
+
 func TestAPIKeyAuthOpenAIQuotaErrorFormat(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

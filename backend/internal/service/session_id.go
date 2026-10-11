@@ -1,11 +1,23 @@
 package service
 
 import (
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 )
+
+var wrapperSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+
+// SanitizeWrapperSessionID accepts only identifiers that the Wrapper itself
+// accepts, so the routing key and the upstream history key cannot disagree.
+func SanitizeWrapperSessionID(raw string) string {
+	if wrapperSessionIDPattern.MatchString(raw) {
+		return raw
+	}
+	return ""
+}
 
 // maxPersistedSessionIDLength bounds the persisted client session identifier to the
 // usage_logs.session_id column width (VARCHAR(255)). Longer values are rejected so
@@ -53,6 +65,19 @@ func ExtractClientSessionID(c *gin.Context) string {
 		if sessionID := sanitizeSessionID(c.GetHeader(grokConversationIDHeader)); sessionID != "" {
 			return sessionID
 		}
+	}
+	return ""
+}
+
+// Anthropic requests commonly carry their stable conversation ID only in
+// metadata.user_id. Use it for usage-log correlation when no explicit client
+// header was supplied; this does not affect routing or managed admission.
+func ExtractAnthropicUsageSessionID(c *gin.Context, metadataUserID string) string {
+	if id := ExtractClientSessionID(c); id != "" {
+		return id
+	}
+	if uid := ParseMetadataUserID(metadataUserID); uid != nil {
+		return sanitizeSessionID(uid.SessionID)
 	}
 	return ""
 }

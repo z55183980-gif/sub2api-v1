@@ -149,7 +149,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	if tokenType != "oauth" || !mimicClaudeCode {
 		for key, values := range clientHeaders {
 			lowerKey := strings.ToLower(key)
-			if allowedHeaders[lowerKey] {
+			if allowedAnthropicUpstreamHeader(account, lowerKey) {
 				wireKey := resolveWireCasing(key)
 				for _, v := range values {
 					addHeaderRaw(req.Header, wireKey, v)
@@ -189,7 +189,8 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	}
 
 	// 同步 X-Claude-Code-Session-Id 头：取 body 中已处理的 metadata.user_id 的 session_id 覆盖
-	if sessionHeader := getHeaderRaw(req.Header, "X-Claude-Code-Session-Id"); sessionHeader != "" {
+	if sessionHeader := getHeaderRaw(req.Header, "X-Claude-Code-Session-Id"); sessionHeader != "" &&
+		!(account.GetExtraString("wrapper_protocol") == "anthropic-messages-cli-v1" && getHeaderRaw(req.Header, "X-Wrapper-Session-Mode") == "managed") {
 		if uid := gjson.GetBytes(body, "metadata.user_id").String(); uid != "" {
 			if parsed := ParseMetadataUserID(uid); parsed != nil {
 				setHeaderRaw(req.Header, "X-Claude-Code-Session-Id", parsed.SessionID)

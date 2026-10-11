@@ -547,6 +547,11 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create test payload")
 	}
+	// Wrapper routes requests through Claude CLI, which cannot control sampling
+	// temperature. Keep the normal Claude Code probe for other account types.
+	if account.GetExtraString("wrapper_protocol") == "anthropic-messages-cli-v1" {
+		delete(payload, "temperature")
+	}
 	payloadBytes, _ := json.Marshal(payload)
 
 	// Send test_start event

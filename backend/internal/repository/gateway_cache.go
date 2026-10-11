@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -17,6 +18,7 @@ import (
 const stickySessionPrefix = "sticky_session:"
 const openAIResponsesSessionWindowPrefix = "openai_responses_session_window:"
 const liveCallPrefix = "live:call:"
+const wrapperManagedPrefix = "wrapper_managed:"
 
 type gatewayCache struct {
 	rdb *redis.Client
@@ -68,6 +70,45 @@ func (c *gatewayCache) RefreshSessionTTL(ctx context.Context, groupID int64, ses
 func (c *gatewayCache) DeleteSessionAccountID(ctx context.Context, groupID int64, sessionHash string) error {
 	key := buildSessionKey(groupID, sessionHash)
 	return c.rdb.Del(ctx, key).Err()
+}
+
+func (c *gatewayCache) GetWrapperManagedState(ctx context.Context, key string) ([]byte, error) {
+	value, err := c.rdb.Get(ctx, wrapperManagedPrefix+"state:"+key).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return nil, nil
+	}
+	return value, err
+}
+
+func (c *gatewayCache) SetWrapperManagedState(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	return c.rdb.Set(ctx, wrapperManagedPrefix+"state:"+key, value, ttl).Err()
+}
+
+func (c *gatewayCache) AcquireWrapperManagedLock(ctx context.Context, key string, ttl time.Duration) (string, bool, error) {
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		return "", false, err
+	}
+	token := hex.EncodeToString(random)
+	ok, err := c.rdb.SetNX(ctx, wrapperManagedPrefix+"lock:"+key, token, ttl).Result()
+	return token, ok, err
+}
+
+var refreshWrapperManagedLockScript = redis.NewScript(`
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+return redis.call('PEXPIRE', KEYS[1], ARGV[2])`)
+
+func (c *gatewayCache) RefreshWrapperManagedLock(ctx context.Context, key, token string, ttl time.Duration) (bool, error) {
+	n, err := refreshWrapperManagedLockScript.Run(ctx, c.rdb, []string{wrapperManagedPrefix + "lock:" + key}, token, ttl.Milliseconds()).Int64()
+	return n == 1, err
+}
+
+var releaseWrapperManagedLockScript = redis.NewScript(`
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+return redis.call('DEL', KEYS[1])`)
+
+func (c *gatewayCache) ReleaseWrapperManagedLock(ctx context.Context, key, token string) error {
+	return releaseWrapperManagedLockScript.Run(ctx, c.rdb, []string{wrapperManagedPrefix + "lock:" + key}, token).Err()
 }
 
 var claimOpenAIResponsesSessionWindowScript = redis.NewScript(`

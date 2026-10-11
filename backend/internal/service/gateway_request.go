@@ -48,9 +48,10 @@ var (
 // 仅在 GenerateSessionHash 第 3 级 fallback（消息内容 hash）时混入，
 // 避免不同用户发送相同消息产生相同 hash 导致账号集中。
 type SessionContext struct {
-	ClientIP  string
-	UserAgent string
-	APIKeyID  int64
+	ClientIP         string
+	UserAgent        string
+	APIKeyID         int64
+	WrapperSessionID string
 }
 
 type jsonRange struct {
@@ -301,7 +302,8 @@ type ParsedRequest struct {
 
 	// OnUpstreamAccepted 上游接受请求后立即调用（用于提前释放串行锁）
 	// 流式请求在收到 2xx 响应头后调用，避免持锁等流完成
-	OnUpstreamAccepted func()
+	OnUpstreamAccepted     func()
+	AutoWrapperManagedTurn *WrapperManagedAutoTurn
 }
 
 // NormalizeSessionUserAgent reduces UA noise for sticky-session and digest hashing.

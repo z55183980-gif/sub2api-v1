@@ -448,6 +448,23 @@ var allowedHeaders = map[string]bool{
 	"x-client-request-id":                       true,
 }
 
+// Wrapper-specific controls are forwarded only to accounts registered by the
+// Wrapper Manager. Ordinary Anthropic upstreams must not receive these headers.
+func allowedAnthropicUpstreamHeader(account *Account, lowerKey string) bool {
+	if allowedHeaders[lowerKey] {
+		return true
+	}
+	if account == nil || account.GetExtraString("wrapper_protocol") != "anthropic-messages-cli-v1" {
+		return false
+	}
+	switch lowerKey {
+	case "x-wrapper-session-id", "x-wrapper-session-mode", "x-wrapper-ack-turn-id", "x-idempotency-key":
+		return true
+	default:
+		return false
+	}
+}
+
 // ErrStickySessionNotFound is returned by GatewayCache.GetSessionAccountID
 // when no binding exists for the session. It abstracts away the underlying
 // cache implementation (e.g. redis.Nil), mirroring ErrRefreshTokenNotFound.
@@ -892,6 +909,9 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 	if parsed == nil {
 		return ""
 	}
+	if parsed.SessionContext != nil && parsed.SessionContext.WrapperSessionID != "" {
+		return DeriveSessionHashFromSeed(fmt.Sprintf("wrapper:%d:%s", parsed.SessionContext.APIKeyID, parsed.SessionContext.WrapperSessionID))
+	}
 
 	// 1. 最高优先级：从 metadata.user_id 提取 session_xxx
 	if parsed.MetadataUserID != "" {
@@ -960,6 +980,18 @@ func (s *GatewayService) BindStickySession(ctx context.Context, groupID *int64, 
 		return nil
 	}
 	return s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, accountID, stickySessionTTL)
+}
+
+// RestoreManagedWrapperSessionBinding undoes an eager scheduler binding when
+// the selected account cannot serve a managed Wrapper conversation.
+func (s *GatewayService) RestoreManagedWrapperSessionBinding(ctx context.Context, groupID *int64, sessionHash string, originalAccountID int64) error {
+	if sessionHash == "" || s.cache == nil {
+		return nil
+	}
+	if originalAccountID > 0 {
+		return s.BindStickySession(ctx, groupID, sessionHash, originalAccountID)
+	}
+	return s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 }
 
 // bindGatewayStickySessionDuringSelection preserves the normal eager sticky

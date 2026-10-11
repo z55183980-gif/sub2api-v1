@@ -91,6 +91,17 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			return nil, err
 		}
 	}
+	if input.Parsed != nil && input.Parsed.AutoWrapperManagedTurn != nil {
+		defer func() {
+			if !input.Parsed.AutoWrapperManagedTurn.IsReady() {
+				input.Parsed.AutoWrapperManagedTurn.Quarantine()
+			}
+		}()
+	}
+	if input.Parsed != nil && input.Parsed.AutoWrapperManagedTurn != nil && input.RequestModel != input.OriginalModel {
+		input.Parsed.AutoWrapperManagedTurn.Quarantine()
+		return nil, errors.New("automatic managed session requires an unmapped model")
+	}
 
 	var resp *http.Response
 	retryStart := time.Now()
@@ -121,6 +132,9 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		}
 
 		// 透传分支禁止 400 请求体降级重试（该重试会改写请求体）
+		if input.Parsed != nil && input.Parsed.AutoWrapperManagedTurn != nil && resp.StatusCode >= 400 {
+			break
+		}
 		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
 			if attempt < maxRetryAttempts {
 				elapsed := time.Since(retryStart)
@@ -175,6 +189,9 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if input.Parsed != nil && input.Parsed.AutoWrapperManagedTurn != nil && resp.StatusCode >= 400 {
+		return s.handleErrorResponse(ctx, resp, c, account, input.RequestModel)
+	}
 	if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {
 			respBody, _ := s.readUpstreamErrorBody(resp)
@@ -254,7 +271,32 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	var firstTokenMs *int
 	var clientDisconnect bool
 	if input.RequestStream {
-		streamResult, err := s.handleStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, account, input.StartTime, input.RequestModel)
+		var autoTurn *WrapperManagedAutoTurn
+		if input.Parsed != nil {
+			autoTurn = input.Parsed.AutoWrapperManagedTurn
+		}
+		streamResult, err := s.handleStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, account, input.StartTime, input.RequestModel, autoTurn)
+		if autoTurn != nil {
+			if err == nil && streamResult != nil && !streamResult.clientDisconnect {
+				commitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				commitErr := autoTurn.Commit(commitCtx)
+				cancel()
+				if commitErr != nil {
+					err = commitErr
+				}
+			} else if err == nil {
+				// The next downstream transcript must prove receipt of this turn.
+				commitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				commitErr := autoTurn.Commit(commitCtx)
+				cancel()
+				if commitErr != nil {
+					err = commitErr
+				}
+			}
+			if err != nil {
+				autoTurn.Quarantine()
+			}
+		}
 		if err != nil {
 			// 流中断时保留已观测到的 usage 与错误一起返回，避免上游已计量的请求
 			// 完全漏记漏计费（issue #5148）。
@@ -300,6 +342,13 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	token string,
 ) (*http.Request, []byte, error) {
 	body = stripDeferredToolCacheControl(body)
+	if account.GetExtraString("wrapper_protocol") == "anthropic-messages-cli-v1" {
+		var err error
+		body, err = normalizeWrapperMessages(body)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 	targetURL := claudeAPIURL
 	baseURL := account.GetBaseURL()
 	if baseURL != "" {
@@ -337,7 +386,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	if c != nil && c.Request != nil {
 		for key, values := range c.Request.Header {
 			lowerKey := strings.ToLower(strings.TrimSpace(key))
-			if !allowedHeaders[lowerKey] {
+			if !allowedAnthropicUpstreamHeader(account, lowerKey) {
 				continue
 			}
 			wireKey := resolveWireCasing(key)
@@ -376,6 +425,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 	account *Account,
 	startTime time.Time,
 	model string,
+	autoTurn ...*WrapperManagedAutoTurn,
 ) (*streamingResult, error) {
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
@@ -534,6 +584,12 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			line := ev.line
 			if data, ok := extractAnthropicSSEDataLine(line); ok {
 				trimmed := strings.TrimSpace(data)
+				if len(autoTurn) > 0 && autoTurn[0] != nil {
+					restored := reverseToolNamesIfPresent(c, []byte(line))
+					if restoredData, ok := extractAnthropicSSEDataLine(string(restored)); ok {
+						autoTurn[0].Observe([]byte(strings.TrimSpace(restoredData)))
+					}
+				}
 				observer.ObserveAnthropic([]byte(trimmed))
 				if anthropicStreamEventIsTerminal("", trimmed) {
 					sawTerminalEvent = true
