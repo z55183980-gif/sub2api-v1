@@ -117,6 +117,87 @@ func TestWrapperManagedAutoFullHistoryToolHandoff(t *testing.T) {
 	if c.GetHeader("X-Wrapper-Ack-Turn-Id") != "11111111-1111-4111-8111-111111111111" {
 		t.Fatal("missing receipt")
 	}
+	if c.GetHeader("X-Wrapper-Session-Id") != first.state.NativeSessionID {
+		t.Fatal("follow-up must reuse the same managed session ID")
+	}
+}
+
+func TestWrapperManagedAutoContextManagementKeepsNativeSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	store := newWrapperManagedTestStore()
+	key := WrapperManagedAutoKey(42, "conversation-context-hint")
+	first, err := beginWrapperManagedAutoTurn(ctx, store, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstBody := []byte(`{"model":"sonnet","stream":true,"context_management":{"edits":[]},"messages":[{"role":"user","content":"hello"}]}`)
+	_, active, err := first.Prepare(ctx, 1, firstBody, managedTestContext())
+	if err != nil || !active {
+		t.Fatalf("first prepare: active=%v err=%v", active, err)
+	}
+	firstID := first.state.NativeSessionID
+	first.Observe([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hello"}}`))
+	first.Observe([]byte(`{"type":"content_block_stop","index":0}`))
+	first.Observe([]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`))
+	first.Observe([]byte(`{"type":"message_stop","wrapper_turn_id":"11111111-1111-4111-8111-111111111111"}`))
+	if err := first.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	first.Release()
+	second, err := beginWrapperManagedAutoTurn(ctx, store, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Release()
+	secondBody := []byte(`{"model":"sonnet","stream":true,"context_management":{"edits":[]},"messages":[{"role":"user","content":"hello"},{"role":"assistant","content":[{"type":"text","text":"hello"}]},{"role":"user","content":"again"}]}`)
+	c := managedTestContext()
+	wire, active, err := second.Prepare(ctx, 1, secondBody, c)
+	if err != nil || !active || gjson.GetBytes(wire, "messages.#").Int() != 1 {
+		t.Fatalf("second prepare: active=%v err=%v body=%s", active, err, wire)
+	}
+	if c.GetHeader("X-Wrapper-Session-Id") != firstID || c.GetHeader("X-Wrapper-Ack-Turn-Id") == "" {
+		t.Fatal("context management hint prevented native session reuse")
+	}
+}
+
+func TestWrapperManagedAutoCachedTextBlockBecomesString(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	store := newWrapperManagedTestStore()
+	key := WrapperManagedAutoKey(42, "conversation-cache-shape")
+	first, err := beginWrapperManagedAutoTurn(ctx, store, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstBody := []byte(`{"model":"sonnet","stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}]}`)
+	_, active, err := first.Prepare(ctx, 1, firstBody, managedTestContext())
+	if err != nil || !active {
+		t.Fatalf("first prepare: active=%v err=%v", active, err)
+	}
+	firstID := first.state.NativeSessionID
+	first.Observe([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"answer"}}`))
+	first.Observe([]byte(`{"type":"content_block_stop","index":0}`))
+	first.Observe([]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`))
+	first.Observe([]byte(`{"type":"message_stop","wrapper_turn_id":"11111111-1111-4111-8111-111111111111"}`))
+	if err := first.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	first.Release()
+	second, err := beginWrapperManagedAutoTurn(ctx, store, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Release()
+	secondBody := []byte(`{"model":"sonnet","stream":true,"messages":[{"role":"user","content":"hello"},{"role":"assistant","content":[{"type":"text","text":"answer"}]},{"role":"user","content":"next"}]}`)
+	c := managedTestContext()
+	wire, active, err := second.Prepare(ctx, 1, secondBody, c)
+	if err != nil || !active || gjson.GetBytes(wire, "messages.#").Int() != 1 {
+		t.Fatalf("second prepare: active=%v err=%v body=%s", active, err, wire)
+	}
+	if c.GetHeader("X-Wrapper-Session-Id") != firstID || c.GetHeader("X-Wrapper-Ack-Turn-Id") == "" {
+		t.Fatal("cached text representation prevented native session reuse")
+	}
 }
 
 func TestWrapperManagedAutoRejectsUnprovenHistory(t *testing.T) {
@@ -130,6 +211,43 @@ func TestWrapperManagedAutoRejectsUnprovenHistory(t *testing.T) {
 	_, active, err := turn.Prepare(ctx, 1, body, managedTestContext())
 	if err != nil || active {
 		t.Fatalf("unresolved historical tool call must stay stateless: %v %v", active, err)
+	}
+}
+
+func TestWrapperManagedAutoSkipsOversizedBootstrapHistory(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	store := newWrapperManagedTestStore()
+	key := WrapperManagedAutoKey(42, "conversation-large")
+	turn, err := beginWrapperManagedAutoTurn(ctx, store, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer turn.Release()
+	body, err := json.Marshal(map[string]any{
+		"model": "sonnet", "stream": true,
+		"messages": []map[string]any{
+			{"role": "user", "content": strings.Repeat("a", wrapperManagedMaxStateBytes)},
+			{"role": "assistant", "content": "old answer"},
+			{"role": "user", "content": "new question"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := managedTestContext()
+	wire, active, err := turn.Prepare(ctx, 1, body, c)
+	if err != nil || active || string(wire) != string(body) {
+		t.Fatalf("oversized bootstrap should stay stateless: active=%v err=%v", active, err)
+	}
+	if reason, _, _ := turn.Decision(); reason != "bootstrap_history_too_large" {
+		t.Fatalf("unexpected skip reason: %q", reason)
+	}
+	if c.GetHeader("X-Wrapper-Session-Mode") != "" {
+		t.Fatal("oversized bootstrap set managed session header")
+	}
+	if state, err := store.GetWrapperManagedState(ctx, key); err != nil || len(state) != 0 {
+		t.Fatalf("oversized bootstrap persisted managed state: err=%v bytes=%d", err, len(state))
 	}
 }
 
@@ -232,8 +350,14 @@ func TestWrapperManagedAutoRejectsChangedHistoryAndIncompleteStream(t *testing.T
 	second, _ := beginWrapperManagedAutoTurn(ctx, store, key)
 	defer second.Release()
 	_, active, err = second.Prepare(ctx, 1, []byte(`{"model":"sonnet","stream":true,"messages":[{"role":"user","content":"question"}]}`), managedTestContext())
-	if err == nil || !active {
-		t.Fatal("quarantined turn must not resume")
+	if err != nil || !active {
+		t.Fatalf("quarantined turn should start a new native session: active=%v err=%v", active, err)
+	}
+	if reason, _, _ := second.Decision(); reason != "incomplete_previous_turn" {
+		t.Fatalf("unexpected resync reason: %q", reason)
+	}
+	if second.state.NativeSessionID == first.state.NativeSessionID {
+		t.Fatal("resync must not reuse the tainted native session")
 	}
 }
 
@@ -259,8 +383,53 @@ func TestWrapperManagedAutoRejectsChangedHistory(t *testing.T) {
 	defer second.Release()
 	body := []byte(`{"model":"sonnet","stream":true,"messages":[{"role":"user","content":"changed"},{"role":"assistant","content":[{"type":"text","text":"answer"}]},{"role":"user","content":"next"}]}`)
 	_, active, err = second.Prepare(ctx, 1, body, managedTestContext())
-	if err == nil || !active || !strings.Contains(err.Error(), "history differs") {
-		t.Fatalf("changed history must fail closed: active=%v err=%v", active, err)
+	if err != nil || !active {
+		t.Fatalf("changed history should seed a new native session: active=%v err=%v", active, err)
+	}
+	if reason, _, _ := second.Decision(); reason != "history_changed" {
+		t.Fatalf("unexpected resync reason: %q", reason)
+	}
+	if second.state.NativeSessionID == first.state.NativeSessionID {
+		t.Fatal("resync must not reuse the old native session")
+	}
+}
+
+func TestWrapperManagedAutoUncertainToolResultFallsBackAndAllowsFreshBootstrap(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	store := newWrapperManagedTestStore()
+	key := WrapperManagedAutoKey(42, "conversation-tool-recovery")
+	first, err := beginWrapperManagedAutoTurn(ctx, store, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, active, err := first.Prepare(ctx, 1, []byte(`{"model":"sonnet","stream":true,"messages":[{"role":"user","content":"lookup"}]}`), managedTestContext())
+	if err != nil || !active {
+		t.Fatalf("first prepare: %v %v", active, err)
+	}
+	oldID := first.state.NativeSessionID
+	first.Quarantine()
+	first.Release()
+	second, err := beginWrapperManagedAutoTurn(ctx, store, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, active, err = second.Prepare(ctx, 1, []byte(`{"model":"sonnet","stream":true,"messages":[{"role":"user","content":"lookup"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"lookup","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"42"}]}]}`), managedTestContext())
+	if err != nil || active {
+		t.Fatalf("uncertain tool result must stay stateless: %v %v", active, err)
+	}
+	second.Release()
+	third, err := beginWrapperManagedAutoTurn(ctx, store, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer third.Release()
+	_, active, err = third.Prepare(ctx, 1, []byte(`{"model":"sonnet","stream":true,"messages":[{"role":"user","content":"lookup"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"lookup","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"42"}]},{"role":"assistant","content":"done"},{"role":"user","content":"next"}]}`), managedTestContext())
+	if err != nil || !active {
+		t.Fatalf("fresh bootstrap: %v %v", active, err)
+	}
+	if third.state.NativeSessionID == oldID {
+		t.Fatal("tainted native session ID was reused")
 	}
 }
 
@@ -328,7 +497,10 @@ func TestWrapperManagedAutoRejectsUnmatchedToolResult(t *testing.T) {
 	defer second.Release()
 	body := []byte(`{"model":"sonnet","stream":true,"messages":[{"role":"user","content":"lookup"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_expected","name":"lookup","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_wrong","content":"42"}]}]}`)
 	_, active, err = second.Prepare(ctx, 1, body, managedTestContext())
-	if err == nil || !active || !strings.Contains(err.Error(), "tool result ID") {
-		t.Fatalf("unmatched result must fail closed: active=%v err=%v", active, err)
+	if err != nil || active {
+		t.Fatalf("unmatched result must use stateless fallback: active=%v err=%v", active, err)
+	}
+	if reason, _, _ := second.Decision(); reason != "pending_tool_results_changed" {
+		t.Fatalf("unexpected fallback reason: %q", reason)
 	}
 }

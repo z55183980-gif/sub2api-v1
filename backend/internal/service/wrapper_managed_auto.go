@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -27,13 +28,14 @@ const (
 )
 
 type wrapperManagedState struct {
-	AccountID      int64             `json:"account_id"`
-	Model          string            `json:"model"`
-	System         json.RawMessage   `json:"system"`
-	Messages       []json.RawMessage `json:"messages"`
-	Receipt        string            `json:"receipt"`
-	Phase          string            `json:"phase"`
-	PendingToolIDs []string          `json:"pending_tool_ids,omitempty"`
+	AccountID       int64             `json:"account_id"`
+	NativeSessionID string            `json:"native_session_id,omitempty"`
+	Model           string            `json:"model"`
+	System          json.RawMessage   `json:"system"`
+	Messages        []json.RawMessage `json:"messages"`
+	Receipt         string            `json:"receipt"`
+	Phase           string            `json:"phase"`
+	PendingToolIDs  []string          `json:"pending_tool_ids,omitempty"`
 }
 
 type WrapperManagedAutoTurn struct {
@@ -56,10 +58,53 @@ type WrapperManagedAutoTurn struct {
 	skipReason         string
 	inputMessages      int
 	normalizedMessages int
+	matchedMessages    int
+	mergedAssistants   int
+	recentShape        string
 }
 
 func (t *WrapperManagedAutoTurn) Decision() (string, int, int) {
 	return t.skipReason, t.inputMessages, t.normalizedMessages
+}
+
+// HistoryDecision reports only structural counts. No message content is logged.
+func (t *WrapperManagedAutoTurn) HistoryDecision() (int, int, string) {
+	return t.matchedMessages, t.mergedAssistants, t.recentShape
+}
+
+func managedRecentMessageShape(messages []json.RawMessage) string {
+	if len(messages) > 6 {
+		messages = messages[len(messages)-6:]
+	}
+	shape := make([]string, 0, len(messages))
+	for _, message := range messages {
+		role := gjson.GetBytes(message, "role").String()
+		if role != "user" && role != "assistant" {
+			role = "other"
+		}
+		blocks := managedHistoryBlocks(message)
+		if blocks == nil {
+			shape = append(shape, role+":text")
+			continue
+		}
+		types := make([]string, 0, len(blocks))
+		for _, item := range blocks {
+			block, ok := item.(map[string]any)
+			if !ok {
+				types = append(types, "other")
+				continue
+			}
+			typ, _ := block["type"].(string)
+			switch typ {
+			case "text", "tool_use", "tool_result", "thinking", "redacted_thinking":
+				types = append(types, typ)
+			default:
+				types = append(types, "other")
+			}
+		}
+		shape = append(shape, role+":"+strings.Join(types, "+"))
+	}
+	return strings.Join(shape, ",")
 }
 
 // A new native CLI session may be seeded with a complete, proven transcript.
@@ -126,6 +171,14 @@ func WrapperManagedAutoKey(keyID int64, downstreamSessionID string) string {
 
 func WrapperManagedAutoSessionID(key string) string { return "sub2api-" + key }
 
+func newWrapperManagedAutoSessionID(key string) (string, error) {
+	var suffix [16]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", err
+	}
+	return WrapperManagedAutoSessionID(key) + "-" + hex.EncodeToString(suffix[:]), nil
+}
+
 func (s *GatewayService) WrapperManagedStore() WrapperManagedStore {
 	store, _ := s.cache.(WrapperManagedStore)
 	return store
@@ -151,10 +204,10 @@ func (s *GatewayService) WrapperManagedAutoState(ctx context.Context, key string
 	if err := json.Unmarshal(data, &state); err != nil {
 		return false, 0, err
 	}
-	if state.Phase == "quarantined" || state.Phase == "pending" {
-		return true, state.AccountID, errors.New("managed session requires reset after an incomplete turn")
+	if state.Phase == "" && state.AccountID == 0 {
+		return false, 0, nil
 	}
-	if state.Phase != "ready" || state.AccountID <= 0 {
+	if state.AccountID <= 0 || (state.Phase != "ready" && state.Phase != "quarantined" && state.Phase != "pending") {
 		return true, state.AccountID, errors.New("managed session state is invalid")
 	}
 	return true, state.AccountID, nil
@@ -222,6 +275,13 @@ func (t *WrapperManagedAutoTurn) Release() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = t.store.ReleaseWrapperManagedLock(ctx, t.key, t.token)
+}
+
+func (t *WrapperManagedAutoTurn) abandonNativeSession(ctx context.Context, reason string) error {
+	t.skipReason = reason
+	t.state = wrapperManagedState{}
+	t.wasReady = false
+	return t.save(ctx)
 }
 
 func (t *WrapperManagedAutoTurn) save(ctx context.Context) error {
@@ -292,6 +352,15 @@ func managedHistoryMessage(raw json.RawMessage) json.RawMessage {
 			filtered = append(filtered, block)
 		}
 		message["content"] = filtered
+		// Claude Code may turn a cached single text block into a plain string
+		// on its next request. Both forms represent the same visible message.
+		if len(filtered) == 1 {
+			if block, ok := filtered[0].(map[string]any); ok && block["type"] == "text" {
+				if value, ok := block["text"].(string); ok {
+					message["content"] = value
+				}
+			}
+		}
 	}
 	encoded, _ := json.Marshal(message)
 	return encoded
@@ -373,6 +442,66 @@ func equalManagedMessage(a, b json.RawMessage) bool {
 	return string(managedHistoryMessage(a)) == string(managedHistoryMessage(b))
 }
 
+// matchManagedHistoryPrefix proves that the complete client history (except its
+// final, fresh user message) is the history already executed by the CLI.
+// Some clients split one assistant turn into adjacent text and tool_use
+// messages. Joining only consecutive assistant blocks preserves their order and
+// never treats an unexecuted user message or tool result as saved history.
+func matchManagedHistoryPrefix(request, saved []json.RawMessage) (int, int, string) {
+	if len(request) == 0 {
+		return 0, 0, "history_length_changed"
+	}
+	client := 0
+	merged := 0
+	for _, previous := range saved {
+		if client >= len(request)-1 {
+			return client, merged, "history_length_changed"
+		}
+		if equalManagedMessage(request[client], previous) {
+			client++
+			continue
+		}
+		if gjson.GetBytes(previous, "role").String() != "assistant" || gjson.GetBytes(request[client], "role").String() != "assistant" {
+			return client, merged, "history_changed"
+		}
+		var expected struct {
+			Content []json.RawMessage `json:"content"`
+		}
+		if err := json.Unmarshal(managedCanonicalAssistant(previous), &expected); err != nil || len(expected.Content) == 0 {
+			return client, merged, "history_changed"
+		}
+		combined := make([]json.RawMessage, 0, len(expected.Content))
+		start := client
+		for client < len(request)-1 && gjson.GetBytes(request[client], "role").String() == "assistant" {
+			var part struct {
+				Content []json.RawMessage `json:"content"`
+			}
+			if err := json.Unmarshal(managedCanonicalAssistant(request[client]), &part); err != nil || len(part.Content) == 0 {
+				return client, merged, "history_changed"
+			}
+			combined = append(combined, part.Content...)
+			client++
+			if len(combined) > len(expected.Content) {
+				return client, merged, "history_changed"
+			}
+			if len(combined) == len(expected.Content) {
+				if !reflect.DeepEqual(combined, expected.Content) {
+					return client, merged, "history_changed"
+				}
+				merged += client - start - 1
+				break
+			}
+		}
+		if len(combined) != len(expected.Content) {
+			return client, merged, "history_changed"
+		}
+	}
+	if client != len(request)-1 {
+		return client, merged, "extra_history_messages"
+	}
+	return client, merged, ""
+}
+
 // Prepare accepts a complete downstream transcript. The initial managed turn
 // seeds the native session with validated history; later turns send only the
 // fresh user message.
@@ -391,50 +520,119 @@ func (t *WrapperManagedAutoTurn) Prepare(ctx context.Context, accountID int64, b
 		return nil, false, err
 	}
 	t.normalizedMessages = len(request.Messages)
-	if gjson.GetBytes(normalized, "context_management").Exists() || gjson.GetBytes(normalized, "metadata.mcp_servers.#").Int() > 0 {
-		if t.state.Phase == "" {
-			t.skipReason = "context_controls_or_mcp_servers"
-			return body, false, nil
+	t.recentShape = managedRecentMessageShape(request.Messages)
+	// Wrapper accepts context_management as an unsupported hint in both modes.
+	// Claude Code sends it on ordinary turns, so it must not block native reuse.
+	if gjson.GetBytes(normalized, "metadata.mcp_servers.#").Int() > 0 {
+		if t.state.Phase != "" {
+			if err := t.abandonNativeSession(ctx, "mcp_servers"); err != nil {
+				return nil, false, err
+			}
 		}
-		return nil, true, errors.New("managed session cannot add context controls or MCP servers")
+		t.skipReason = "mcp_servers"
+		return body, false, nil
+	}
+	if t.state.AccountID > 0 && t.state.AccountID != accountID {
+		if err := t.abandonNativeSession(ctx, "account_changed"); err != nil {
+			return nil, false, err
+		}
+		t.skipReason = "account_changed"
+		return body, false, nil
+	}
+	resyncReason := ""
+	if t.state.Phase != "" && t.state.Phase != "ready" {
+		resyncReason = "incomplete_previous_turn"
+	} else if t.state.Phase == "ready" {
+		switch {
+		case t.state.Model != request.Model || !equalManagedSystem(t.state.System, request.System):
+			resyncReason = "model_or_system_changed"
+		case t.state.Receipt == "":
+			resyncReason = "receipt_unavailable"
+		default:
+			t.matchedMessages, t.mergedAssistants, resyncReason = matchManagedHistoryPrefix(request.Messages, t.state.Messages)
+		}
+	}
+	if resyncReason != "" {
+		// Never resume a native transcript whose client-visible history is
+		// uncertain. A proven full downstream transcript can seed a fresh ID;
+		// otherwise keep this request on the stateless path.
+		t.skipReason = resyncReason
+		if err := t.abandonNativeSession(ctx, resyncReason); err != nil {
+			return nil, false, err
+		}
+	}
+	if len(request.Messages) == 0 {
+		if t.state.Phase != "" {
+			if err := t.abandonNativeSession(ctx, "empty_history"); err != nil {
+				return nil, false, err
+			}
+		}
+		t.skipReason = "empty_history"
+		return body, false, nil
+	}
+	if t.state.Phase == "" && !validManagedBootstrapHistory(request.Messages) {
+		if t.skipReason == "" {
+			t.skipReason = "unproven_initial_history"
+		}
+		return body, false, nil
+	}
+	fresh := request.Messages[len(request.Messages)-1]
+	if gjson.GetBytes(fresh, "role").String() != "user" {
+		if t.state.Phase != "" || resyncReason != "" {
+			if err := t.abandonNativeSession(ctx, "no_fresh_user_turn"); err != nil {
+				return nil, false, err
+			}
+		}
+		t.skipReason = "no_fresh_user_turn"
+		return body, false, nil
+	}
+	if t.state.Phase == "" && hasManagedToolResult(fresh) {
+		t.skipReason = "pending_tool_result_without_handoff"
+		return body, false, nil
+	}
+	if t.state.Phase == "ready" && len(t.state.PendingToolIDs) == 0 && hasManagedToolResult(fresh) {
+		if err := t.abandonNativeSession(ctx, "unexpected_tool_result"); err != nil {
+			return nil, false, err
+		}
+		t.skipReason = "unexpected_tool_result"
+		return body, false, nil
 	}
 	if t.state.Phase == "" {
-		if !validManagedBootstrapHistory(request.Messages) {
-			t.skipReason = "unproven_initial_history"
-			return body, false, nil
-		}
 		prefix := make([]json.RawMessage, 0, len(request.Messages)-1)
 		for _, message := range request.Messages[:len(request.Messages)-1] {
 			prefix = append(prefix, managedHistoryMessage(message))
 		}
-		t.state = wrapperManagedState{AccountID: accountID, Model: request.Model, System: request.System, Messages: prefix, Phase: "pending"}
+		nativeSessionID, err := newWrapperManagedAutoSessionID(t.key)
+		if err != nil {
+			return nil, true, err
+		}
+		bootstrap := wrapperManagedState{AccountID: accountID, NativeSessionID: nativeSessionID, Model: request.Model, System: request.System, Messages: prefix, Phase: "pending"}
+		encoded, err := json.Marshal(bootstrap)
+		if err != nil {
+			return nil, false, err
+		}
+		// Leave room for the first assistant turn. A new oversized history can
+		// still be forwarded statelessly without creating a broken managed state.
+		if len(encoded) > wrapperManagedMaxStateBytes-(128<<10) {
+			t.skipReason = "bootstrap_history_too_large"
+			return body, false, nil
+		}
+		t.state = bootstrap
 	} else {
-		if t.state.Phase != "ready" {
-			return nil, true, errors.New("managed session requires reset after an incomplete turn")
+		// Keep the legacy ID for sessions created before native_session_id was
+		// persisted. New sessions always carry a unique generation suffix.
+		if t.state.NativeSessionID == "" {
+			t.state.NativeSessionID = WrapperManagedAutoSessionID(t.key)
 		}
-		if t.state.AccountID != accountID {
-			return nil, true, errors.New("managed session requires its original Wrapper account")
-		}
-		if t.state.Model != request.Model || !equalManagedSystem(t.state.System, request.System) {
-			return nil, true, errors.New("managed session model or system changed")
-		}
-		if len(request.Messages) != len(t.state.Messages)+1 {
-			return nil, true, errors.New("managed session history length changed")
-		}
-		for i := range t.state.Messages {
-			if !equalManagedMessage(request.Messages[i], t.state.Messages[i]) {
-				return nil, true, fmt.Errorf("managed session history differs at message %d", i)
-			}
-		}
-	}
-	fresh := request.Messages[len(request.Messages)-1]
-	if gjson.GetBytes(fresh, "role").String() != "user" {
-		return nil, true, errors.New("managed session requires a fresh user turn")
 	}
 	if len(t.state.PendingToolIDs) > 0 {
 		blocks := managedHistoryBlocks(fresh)
 		if len(blocks) != len(t.state.PendingToolIDs) {
-			return nil, true, errors.New("managed tool results do not match pending calls")
+			if err := t.abandonNativeSession(ctx, "pending_tool_results_changed"); err != nil {
+				return nil, false, err
+			}
+			t.skipReason = "pending_tool_results_changed"
+			return body, false, nil
 		}
 		expected := map[string]bool{}
 		for _, id := range t.state.PendingToolIDs {
@@ -443,11 +641,19 @@ func (t *WrapperManagedAutoTurn) Prepare(ctx context.Context, accountID int64, b
 		for _, item := range blocks {
 			block, ok := item.(map[string]any)
 			if !ok || block["type"] != "tool_result" {
-				return nil, true, errors.New("managed tool results must contain only tool_result blocks")
+				if err := t.abandonNativeSession(ctx, "pending_tool_results_changed"); err != nil {
+					return nil, false, err
+				}
+				t.skipReason = "pending_tool_results_changed"
+				return body, false, nil
 			}
 			id, _ := block["tool_use_id"].(string)
 			if !expected[id] {
-				return nil, true, errors.New("managed tool result ID does not match pending call")
+				if err := t.abandonNativeSession(ctx, "pending_tool_results_changed"); err != nil {
+					return nil, false, err
+				}
+				t.skipReason = "pending_tool_results_changed"
+				return body, false, nil
 			}
 			delete(expected, id)
 			switch content := block["content"].(type) {
@@ -456,26 +662,37 @@ func (t *WrapperManagedAutoTurn) Prepare(ctx context.Context, accountID int64, b
 				for _, part := range content {
 					p, ok := part.(map[string]any)
 					if !ok || p["type"] != "text" {
-						return nil, true, errors.New("managed tool results support text only")
+						if err := t.abandonNativeSession(ctx, "non_text_tool_result"); err != nil {
+							return nil, false, err
+						}
+						t.skipReason = "non_text_tool_result"
+						return body, false, nil
 					}
 					if _, ok := p["text"].(string); !ok {
-						return nil, true, errors.New("managed tool result text is invalid")
+						if err := t.abandonNativeSession(ctx, "invalid_tool_result"); err != nil {
+							return nil, false, err
+						}
+						t.skipReason = "invalid_tool_result"
+						return body, false, nil
 					}
 				}
 			default:
-				return nil, true, errors.New("managed tool result content is invalid")
+				if err := t.abandonNativeSession(ctx, "invalid_tool_result"); err != nil {
+					return nil, false, err
+				}
+				t.skipReason = "invalid_tool_result"
+				return body, false, nil
 			}
 			if isError, exists := block["is_error"]; exists {
 				if _, ok := isError.(bool); !ok {
-					return nil, true, errors.New("managed tool result is_error is invalid")
+					if err := t.abandonNativeSession(ctx, "invalid_tool_result"); err != nil {
+						return nil, false, err
+					}
+					t.skipReason = "invalid_tool_result"
+					return body, false, nil
 				}
 			}
 		}
-	} else if hasManagedToolResult(fresh) {
-		return nil, true, errors.New("managed session has no pending tool calls")
-	}
-	if t.state.Phase == "ready" && t.state.Receipt == "" {
-		return nil, true, errors.New("managed session receipt unavailable")
 	}
 	t.wasReady = t.state.Phase == "ready"
 	t.requestMessages = append([]json.RawMessage(nil), request.Messages...)
@@ -492,8 +709,8 @@ func (t *WrapperManagedAutoTurn) Prepare(ctx context.Context, accountID int64, b
 		return nil, true, err
 	}
 	c.Request.Header.Set("X-Wrapper-Session-Mode", "managed")
-	c.Request.Header.Set("X-Wrapper-Session-Id", WrapperManagedAutoSessionID(t.key))
-	c.Request.Header.Set("X-Claude-Code-Session-Id", WrapperManagedAutoSessionID(t.key))
+	c.Request.Header.Set("X-Wrapper-Session-Id", t.state.NativeSessionID)
+	c.Request.Header.Set("X-Claude-Code-Session-Id", t.state.NativeSessionID)
 	if t.wasReady && t.state.Receipt != "" {
 		c.Request.Header.Set("X-Wrapper-Ack-Turn-Id", t.state.Receipt)
 	}

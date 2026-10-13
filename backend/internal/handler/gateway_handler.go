@@ -964,11 +964,15 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					defer turn.Release()
 					updated, active, prepareErr := turn.Prepare(c.Request.Context(), account.ID, attemptBody, c)
 					skipReason, inputMessages, normalizedMessages := turn.Decision()
+					matchedMessages, mergedAssistants, recentShape := turn.HistoryDecision()
 					reqLog.Info("wrapper.managed_auto_decision",
 						zap.Bool("active", active),
 						zap.String("skip_reason", skipReason),
 						zap.Int("input_messages", inputMessages),
 						zap.Int("normalized_messages", normalizedMessages),
+						zap.Int("matched_history_messages", matchedMessages),
+						zap.Int("merged_assistant_messages", mergedAssistants),
+						zap.String("recent_message_shape", recentShape),
 						zap.Int64("account_id", account.ID),
 						zap.String("session_fingerprint", key[:12]),
 						zap.Bool("has_receipt", c.GetHeader("X-Wrapper-Ack-Turn-Id") != ""),
