@@ -116,6 +116,7 @@ func TestManagedHistorySplitAssistantRejectsChangedOrExtraContent(t *testing.T) 
 	}{
 		{"changed_text", []json.RawMessage{saved[0], json.RawMessage(`{"role":"assistant","content":"different"}`), json.RawMessage(`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"item":1}}]}`), managedAlignmentToolResult("toolu_1")}, "history_changed"},
 		{"reordered_blocks", []json.RawMessage{saved[0], json.RawMessage(`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"item":1}}]}`), json.RawMessage(`{"role":"assistant","content":"checking"}`), managedAlignmentToolResult("toolu_1")}, "history_changed"},
+		{"role_mismatch", []json.RawMessage{saved[0], json.RawMessage(`{"role":"user","content":"checking"}`), managedAlignmentToolResult("toolu_1")}, "history_changed"},
 		{"extra_user", []json.RawMessage{saved[0], saved[1], json.RawMessage(`{"role":"user","content":"unexecuted"}`), managedAlignmentToolResult("toolu_1")}, "extra_history_messages"},
 	}
 	for _, tc := range cases {

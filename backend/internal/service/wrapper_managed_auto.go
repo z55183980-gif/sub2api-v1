@@ -434,7 +434,15 @@ func equalManagedSystem(a, b json.RawMessage) bool {
 }
 
 func equalManagedMessage(a, b json.RawMessage) bool {
-	if gjson.GetBytes(b, "role").String() == "assistant" {
+	aRole := gjson.GetBytes(a, "role").String()
+	bRole := gjson.GetBytes(b, "role").String()
+	// The role is part of the transcript identity.  Comparing only the
+	// canonical content would otherwise allow a user message to match a saved
+	// assistant turn (or vice versa), advancing the managed prefix incorrectly.
+	if aRole == "" || bRole == "" || aRole != bRole {
+		return false
+	}
+	if bRole == "assistant" {
 		left := managedCanonicalAssistant(a)
 		right := managedCanonicalAssistant(b)
 		return len(left) > 0 && len(right) > 0 && string(left) == string(right)
