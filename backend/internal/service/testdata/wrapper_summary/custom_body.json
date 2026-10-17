@@ -1,0 +1,120 @@
+{
+  "model": "claude-opus-5-5",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Synthetic notebook task"
+    },
+    {
+      "role": "system",
+      "content": "Synthetic CLI system context",
+      "output_config": {
+        "effort": "medium"
+      }
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "signature": "synthetic-signature"
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_011HXVCqfz9LENh2sV4oruEU",
+          "name": "Read",
+          "input": {
+            "file_path": "/synthetic/probe.txt"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "tool_use_id": "toolu_011HXVCqfz9LENh2sV4oruEU",
+          "type": "tool_result",
+          "content": "SYNTHETIC_NOTEBOOK_TEST"
+        }
+      ]
+    },
+    {
+      "role": "system",
+      "content": "Synthetic CLI system context"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Continue synthetic notebook tips"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Continue synthetic notebook tips",
+          "cache_control": {
+            "type": "ephemeral"
+          }
+        }
+      ]
+    }
+  ],
+  "system": [
+    {
+      "type": "text",
+      "text": "x-anthropic-billing-header: cc_version=2.1.300.85d; cc_entrypoint=cli; cc_is_subagent=true;"
+    },
+    {
+      "type": "text",
+      "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+      "cache_control": {
+        "type": "ephemeral"
+      }
+    },
+    {
+      "type": "text",
+      "text": "You are a synthetic note assistant."
+    }
+  ],
+  "tools": [
+    {
+      "name": "Read",
+      "description": "Read synthetic file",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "user_id": "{\"session_id\":\"synthetic-parent\",\"device_id\":\"test\"}"
+  },
+  "max_tokens": 2048,
+  "thinking": {
+    "type": "adaptive",
+    "display": "updates"
+  },
+  "context_management": {
+    "edits": [
+      {
+        "type": "clear_thinking_20251015",
+        "keep": "all"
+      }
+    ]
+  },
+  "output_config": {
+    "effort": "medium"
+  },
+  "stream": true
+}

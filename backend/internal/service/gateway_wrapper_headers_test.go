@@ -16,10 +16,34 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestWrapperJSONModeHintIsServerOwned(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, nonstream := range []bool{false, true} {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest("POST", "/v1/messages", nil)
+		c.Request.Header.Set("X-Wrapper-Response-Mode", "text_blocks")
+		c.Set("wrapper_original_nonstream", nonstream)
+		account := newAnthropicAPIKeyAccountForTest()
+		account.Extra["wrapper_protocol"] = "anthropic-messages-cli-v1"
+		svc := &GatewayService{cfg: &config.Config{}}
+		req, _, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"sonnet","stream":true,"messages":[{"role":"user","content":"hi"}]}`), "test-key")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := ""
+		if nonstream {
+			want = "managed-json"
+		}
+		if req.Header.Get("X-Wrapper-Response-Mode") != want {
+			t.Fatal("client controlled internal mode")
+		}
+	}
+}
+
 func TestAllowedAnthropicUpstreamHeaderWrapperControls(t *testing.T) {
 	wrapper := &Account{Extra: map[string]any{"wrapper_protocol": "anthropic-messages-cli-v1"}}
 	ordinary := &Account{Extra: map[string]any{"wrapper_protocol": "other"}}
-	for _, header := range []string{"x-wrapper-session-id", "x-wrapper-session-mode", "x-wrapper-ack-turn-id", "x-idempotency-key"} {
+	for _, header := range []string{"x-wrapper-session-id", "x-wrapper-session-mode", "x-wrapper-auto-managed", "x-wrapper-ack-turn-id", "x-idempotency-key"} {
 		if !allowedAnthropicUpstreamHeader(wrapper, header) {
 			t.Fatalf("wrapper header %s should be forwarded", header)
 		}
@@ -41,6 +65,7 @@ func TestWrapperSessionHeadersForwardOnlyForWrapperAccount(t *testing.T) {
 		ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 		ctx.Request.Header.Set("X-Wrapper-Session-Id", "session-123")
 		ctx.Request.Header.Set("X-Wrapper-Session-Mode", "managed")
+		ctx.Request.Header.Set("X-Wrapper-Auto-Managed", "1")
 		ctx.Request.Header.Set("X-Idempotency-Key", "turn-1")
 		ctx.Request.Header.Set("X-Wrapper-Ack-Turn-Id", "11111111-1111-4111-8111-111111111111")
 		account := newAnthropicAPIKeyAccountForTest()
@@ -52,7 +77,7 @@ func TestWrapperSessionHeadersForwardOnlyForWrapperAccount(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, header := range []string{"X-Wrapper-Session-Id", "X-Wrapper-Session-Mode", "X-Wrapper-Ack-Turn-Id", "X-Idempotency-Key"} {
+		for _, header := range []string{"X-Wrapper-Session-Id", "X-Wrapper-Session-Mode", "X-Wrapper-Auto-Managed", "X-Wrapper-Ack-Turn-Id", "X-Idempotency-Key"} {
 			if got := req.Header.Get(header); wrapper && got == "" {
 				t.Fatalf("wrapper account did not forward %s", header)
 			} else if !wrapper && got != "" {

@@ -1,0 +1,1045 @@
+[
+  {
+    "events": [
+      {
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {
+          "type": "tool_use",
+          "id": "toolu_01TizhecANEoSofQD9A3x9wt",
+          "name": "Edit",
+          "input": {},
+          "caller": {
+            "type": "direct"
+          }
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ""
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{\"file_path\": \"D:"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\\\\projects\\\\CLI2"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "API\\\\history-repro-20"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "261016\\\\edit-base"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "line-ee191371-b"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "db1-4f4b"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "-9c8f-54916"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "ca82b75\\\\work\\\\"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "probe1.txt"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\", \"old_string\": \"SYNT"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "HETIC_FILE"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "_1"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\", \"new_string\": \"EDITED_FILE"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "_1"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"}"
+        }
+      },
+      {
+        "type": "content_block_stop",
+        "index": 0
+      },
+      {
+        "type": "content_block_start",
+        "index": 1,
+        "content_block": {
+          "type": "tool_use",
+          "id": "toolu_01HZUfvadP9BqF79Pu6yQ15a",
+          "name": "Edit",
+          "input": {},
+          "caller": {
+            "type": "direct"
+          }
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ""
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{\"file_path\": \"D:\\\\projects\\\\CL"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "I2API\\\\history-repro"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "-20261016\\\\edit-"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "baseline-ee191371"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "-bdb1-4f"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "4b-9c8f-"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "54916ca82b75\\\\"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "work\\\\probe2.txt"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\", \"old_string\": \"SY"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "NTHETIC_F"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "ILE_2"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\", \"new_string\": \"EDITED_F"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "ILE_2"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"}"
+        }
+      },
+      {
+        "type": "content_block_stop",
+        "index": 1
+      },
+      {
+        "type": "content_block_start",
+        "index": 2,
+        "content_block": {
+          "type": "tool_use",
+          "id": "toolu_017qnmmyBeFEQoWq1h3HFtSP",
+          "name": "Edit",
+          "input": {},
+          "caller": {
+            "type": "direct"
+          }
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ""
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{\"file_path\": \"D:\\\\projects\\\\"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "CLI2API\\\\history-"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "repro-20261016\\\\ed"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "it-baseline-ee"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "191371-bdb1-"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "4f4b-9c8"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "f-54916ca82b"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "75\\\\work\\\\probe3."
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "txt"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\", \"old_string\": \"SYNTHETIC"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "_FILE_3"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\", \"new_string\": \"EDITED"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "_FILE_3"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"}"
+        }
+      },
+      {
+        "type": "content_block_stop",
+        "index": 2
+      },
+      {
+        "type": "content_block_start",
+        "index": 3,
+        "content_block": {
+          "type": "tool_use",
+          "id": "toolu_017UrRXPm9Kx851YnUsQooNJ",
+          "name": "Read",
+          "input": {},
+          "caller": {
+            "type": "direct"
+          }
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 3,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ""
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 3,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{\"file_path\": \"D:\\\\projects"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 3,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\\\\CLI2API\\\\history"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 3,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "-repro-20261016\\\\"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 3,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "edit-baseline-"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 3,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "ee191371-bdb1"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 3,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "-4f4b-9c"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 3,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "8f-54916ca82"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 3,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "b75\\\\work\\\\probe5"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 3,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ".txt"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 3,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"}"
+        }
+      },
+      {
+        "type": "content_block_stop",
+        "index": 3
+      },
+      {
+        "type": "message_delta",
+        "delta": {
+          "stop_reason": "tool_use",
+          "stop_sequence": null,
+          "stop_details": null,
+          "container": null
+        },
+        "usage": {
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 811,
+          "cache_read_input_tokens": 2746,
+          "output_tokens": 678,
+          "output_tokens_details": {
+            "thinking_tokens": 0
+          },
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 678,
+              "cache_read_input_tokens": 2746,
+              "cache_creation_input_tokens": 811,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 811
+              },
+              "type": "message"
+            }
+          ]
+        },
+        "context_management": {
+          "applied_edits": []
+        }
+      }
+    ],
+    "returned_assistant": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_01TizhecANEoSofQD9A3x9wt",
+          "name": "Edit",
+          "input": {
+            "replace_all": false,
+            "file_path": "D:\\projects\\CLI2API\\history-repro-20261016\\edit-baseline-ee191371-bdb1-4f4b-9c8f-54916ca82b75\\work\\probe1.txt",
+            "old_string": "SYNTHETIC_FILE_1",
+            "new_string": "EDITED_FILE_1"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_01HZUfvadP9BqF79Pu6yQ15a",
+          "name": "Edit",
+          "input": {
+            "replace_all": false,
+            "file_path": "D:\\projects\\CLI2API\\history-repro-20261016\\edit-baseline-ee191371-bdb1-4f4b-9c8f-54916ca82b75\\work\\probe2.txt",
+            "old_string": "SYNTHETIC_FILE_2",
+            "new_string": "EDITED_FILE_2"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_017qnmmyBeFEQoWq1h3HFtSP",
+          "name": "Edit",
+          "input": {
+            "replace_all": false,
+            "file_path": "D:\\projects\\CLI2API\\history-repro-20261016\\edit-baseline-ee191371-bdb1-4f4b-9c8f-54916ca82b75\\work\\probe3.txt",
+            "old_string": "SYNTHETIC_FILE_3",
+            "new_string": "EDITED_FILE_3"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_017UrRXPm9Kx851YnUsQooNJ",
+          "name": "Read",
+          "input": {
+            "file_path": "D:\\projects\\CLI2API\\history-repro-20261016\\edit-baseline-ee191371-bdb1-4f4b-9c8f-54916ca82b75\\work\\probe5.txt"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "events": [
+      {
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {
+          "type": "text",
+          "text": ""
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "text_delta",
+          "text": "The files already"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "text_delta",
+          "text": " cont"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "text_delta",
+          "text": "ain the `"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "text_delta",
+          "text": "EDITED_FILE"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "text_delta",
+          "text": "_n"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "text_delta",
+          "text": "` markers, so the first round"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "text_delta",
+          "text": " of edits was already applied."
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "text_delta",
+          "text": " Moving on to the second round"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "text_delta",
+          "text": " of edits."
+        }
+      },
+      {
+        "type": "content_block_stop",
+        "index": 0
+      },
+      {
+        "type": "content_block_start",
+        "index": 1,
+        "content_block": {
+          "type": "tool_use",
+          "id": "toolu_015f5n72ZQJfBTZzZJNeQp3i",
+          "name": "Edit",
+          "input": {},
+          "caller": {
+            "type": "direct"
+          }
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ""
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{\"file_path\": \"D:\\\\projects"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\\\\CLI2API\\\\history"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "-repro-20261016\\\\"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "edit-baseline-"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "ee191371-bdb"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "1-4f4b-9"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "c8f-54916ca"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "82b75\\\\work\\\\probe"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "1.txt"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\", \"old_string\": \"EDITED_F"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "ILE_1"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\", \"new_string\": \"FINAL_F"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "ILE_1"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"}"
+        }
+      },
+      {
+        "type": "content_block_stop",
+        "index": 1
+      },
+      {
+        "type": "content_block_start",
+        "index": 2,
+        "content_block": {
+          "type": "tool_use",
+          "id": "toolu_013yz33GGn4Ce98iUoo3feKG",
+          "name": "Edit",
+          "input": {},
+          "caller": {
+            "type": "direct"
+          }
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ""
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{\"file_path\": \"D"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ":\\\\projects\\\\CLI"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "2API\\\\history-repro-"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "20261016\\\\edit-ba"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "seline-ee191371-"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "bdb"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "1-4f4b-9"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "c8f-54916ca"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "82b75\\\\work\\\\probe"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "2.txt"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\", \"old_string\": \"EDITED_F"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "ILE_2"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\", \"new_string\": \"FINAL_F"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "ILE_2"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"}"
+        }
+      },
+      {
+        "type": "content_block_stop",
+        "index": 2
+      },
+      {
+        "type": "message_delta",
+        "delta": {
+          "stop_reason": "tool_use",
+          "stop_sequence": null,
+          "stop_details": null,
+          "container": null
+        },
+        "usage": {
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 1062,
+          "cache_read_input_tokens": 4809,
+          "output_tokens": 477,
+          "output_tokens_details": {
+            "thinking_tokens": 64
+          },
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 477,
+              "cache_read_input_tokens": 4809,
+              "cache_creation_input_tokens": 1062,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 1062
+              },
+              "type": "message"
+            }
+          ]
+        },
+        "context_management": {
+          "applied_edits": []
+        }
+      }
+    ],
+    "returned_assistant": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "The files already contain the `EDITED_FILE_n` markers, so the first round of edits was already applied. Moving on to the second round of edits."
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_015f5n72ZQJfBTZzZJNeQp3i",
+          "name": "Edit",
+          "input": {
+            "replace_all": false,
+            "file_path": "D:\\projects\\CLI2API\\history-repro-20261016\\edit-baseline-ee191371-bdb1-4f4b-9c8f-54916ca82b75\\work\\probe1.txt",
+            "old_string": "EDITED_FILE_1",
+            "new_string": "FINAL_FILE_1"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_013yz33GGn4Ce98iUoo3feKG",
+          "name": "Edit",
+          "input": {
+            "replace_all": false,
+            "file_path": "D:\\projects\\CLI2API\\history-repro-20261016\\edit-baseline-ee191371-bdb1-4f4b-9c8f-54916ca82b75\\work\\probe2.txt",
+            "old_string": "EDITED_FILE_2",
+            "new_string": "FINAL_FILE_2"
+          }
+        }
+      ]
+    }
+  }
+]

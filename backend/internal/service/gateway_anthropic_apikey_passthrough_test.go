@@ -28,6 +28,46 @@ type anthropicHTTPUpstreamRecorder struct {
 	err      error
 }
 
+func TestWrapperStreamCancellationClosesUpstreamWithoutWaitingForTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil).WithContext(ctx)
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	resp := &http.Response{Header: http.Header{}, Body: reader}
+	svc := &GatewayService{cfg: &config.Config{}}
+	done := make(chan error, 1)
+	go func() {
+		result, err := svc.handleStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, &Account{ID: 1, Extra: map[string]any{"wrapper_protocol": "anthropic-messages-cli-v1"}}, time.Now(), "sonnet")
+		if result == nil || !result.clientDisconnect {
+			done <- errors.New("missing client disconnect result")
+			return
+		}
+		done <- err
+	}()
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("wrapper upstream kept draining after client cancellation")
+	}
+	_, err := writer.Write([]byte("late output"))
+	require.ErrorIs(t, err, io.ErrClosedPipe)
+}
+
+type autoManagedFailoverAccountRepo struct{ AccountRepository }
+
+func (*autoManagedFailoverAccountRepo) SetError(context.Context, int64, string) error { return nil }
+func (*autoManagedFailoverAccountRepo) SetRateLimited(context.Context, int64, time.Time) error {
+	return nil
+}
+func (*autoManagedFailoverAccountRepo) SetTempUnschedulable(context.Context, int64, time.Time, string) error {
+	return nil
+}
+
 func newAnthropicAPIKeyAccountForTest() *Account {
 	return &Account{
 		ID:          201,
@@ -1241,6 +1281,44 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_UpstreamRequest
 	require.True(t, failoverErr.ShouldRetryNextAccount())
 	// 传输层错误交给 handler failover，service 不得写响应。
 	require.False(t, c.Writer.Written())
+}
+
+func TestGatewayService_AutoManagedHTTPFailureAllowsFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, status := range []int{http.StatusUnauthorized, http.StatusTooManyRequests, http.StatusBadGateway} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			body := []byte(`{"model":"sonnet","stream":true,"messages":[{"role":"user","content":"hello"}]}`)
+			parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), PlatformAnthropic)
+			require.NoError(t, err)
+			store := newWrapperManagedTestStore()
+			turn, err := beginWrapperManagedAutoTurn(context.Background(), store, WrapperManagedAutoKey(42, http.StatusText(status)))
+			require.NoError(t, err)
+			defer turn.Release()
+			wire, active, err := turn.Prepare(context.Background(), 201, body, c)
+			require.NoError(t, err)
+			require.True(t, active)
+			parsed.AutoWrapperManagedTurn = turn
+			upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+				StatusCode: status,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"upstream_error","message":"unavailable"}}`)),
+			}}
+			cfg := &config.Config{}
+			svc := &GatewayService{cfg: cfg, httpUpstream: upstream, rateLimitService: NewRateLimitService(&autoManagedFailoverAccountRepo{}, nil, cfg, nil, nil)}
+			result, err := svc.forwardAnthropicAPIKeyPassthroughWithInput(context.Background(), c, newAnthropicAPIKeyAccountForTest(), anthropicPassthroughForwardInput{
+				Body: wire, Parsed: parsed, RequestModel: "sonnet", OriginalModel: "sonnet", RequestStream: true, StartTime: time.Now(),
+			})
+			require.Nil(t, result)
+			var failoverErr *UpstreamFailoverError
+			require.ErrorAs(t, err, &failoverErr)
+			require.Equal(t, status, failoverErr.StatusCode)
+			require.False(t, c.Writer.Written())
+			require.Equal(t, "quarantined", turn.state.Phase)
+		})
+	}
 }
 
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_EmptyResponseBody(t *testing.T) {

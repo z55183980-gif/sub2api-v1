@@ -129,6 +129,9 @@ scripts
 code-reviews/
 AGENTS.md
 backend/cmd/server/server
+backend/backend/
+__pycache__/
+*.pyc
 deploy/docker-compose.override.yml
 .gocache/
 vite.config.js

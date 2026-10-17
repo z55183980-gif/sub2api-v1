@@ -179,6 +179,9 @@ func (a *Account) EffectiveLoadFactor() int {
 }
 
 func (a *Account) IsSchedulable() bool {
+	if a.GetExtraString("wrapper_protocol") == "anthropic-messages-cli-v1" && wrapperQuotaBlocked(a.ID) {
+		return false
+	}
 	if !a.IsActive() || !a.Schedulable {
 		return false
 	}
@@ -228,6 +231,9 @@ func (a *Account) IsCredentialUsableForShadow() bool {
 }
 
 func (a *Account) IsRateLimited() bool {
+	if a.GetExtraString("wrapper_protocol") == "anthropic-messages-cli-v1" && wrapperQuotaBlocked(a.ID) {
+		return true
+	}
 	if a.RateLimitResetAt == nil {
 		return false
 	}

@@ -1,0 +1,70 @@
+name: sub2api-local-s4
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: sub2api-local-s4-postgres
+    restart: unless-stopped
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      POSTGRES_USER: sub2api_local_s4
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?required}
+      POSTGRES_DB: sub2api_local_s4
+    volumes:
+      - postgres_local_s4:/var/lib/postgresql/data
+    networks: [private]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U sub2api_local_s4 -d sub2api_local_s4"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  redis:
+    image: redis:8-alpine
+    container_name: sub2api-local-s4-redis
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?required}
+    command: [sh, -c, 'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"']
+    volumes:
+      - redis_local_s4:/data
+    networks: [private]
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    image: sub2api-local-s4:managed-shape-20261012
+    container_name: sub2api-local-s4
+    restart: unless-stopped
+    env_file: ./deploy.env
+    environment:
+      SUB2API_AUTO_WRAPPER_MANAGED: 1
+      SUB2API_AUTO_WRAPPER_MANAGED_KEY_IDS: 1
+    ports:
+      - "127.0.0.1:8089:8080"
+    volumes:
+      - app_local_s4:/app/data
+    networks: [private]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -q, -T, "5", -O, /dev/null, "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 6s
+      retries: 10
+      start_period: 60s
+
+networks:
+  private:
+    name: sub2api-local-s4-net
+
+volumes:
+  postgres_local_s4:
+  redis_local_s4:
+  app_local_s4:

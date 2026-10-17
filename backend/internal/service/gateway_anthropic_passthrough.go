@@ -104,9 +104,19 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	}
 
 	var resp *http.Response
+	if account.GetExtraString("wrapper_protocol") == "anthropic-messages-cli-v1" && input.Parsed != nil &&
+		s.wrapperProcessUnavailable(ctx, account, input.Parsed.AutoWrapperManagedTurn, token, proxyURL) {
+		return nil, &UpstreamFailoverError{StatusCode: http.StatusServiceUnavailable, ResponseBody: []byte(`{"type":"error","error":{"type":"overloaded_error","message":"Wrapper has no available CLI process slot"}}`)}
+	}
 	retryStart := time.Now()
 	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {
 		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, input.RequestStream)
+		if account.GetExtraString("wrapper_protocol") == "anthropic-messages-cli-v1" {
+			// A CLI is a live agent process. Downstream cancellation must close
+			// its HTTP request so the Wrapper stops it instead of generating
+			// unseen turns while holding the managed-session lock for billing.
+			upstreamCtx = ctx
+		}
 		upstreamReq, wireBody, err := s.buildUpstreamRequestAnthropicAPIKeyPassthrough(upstreamCtx, c, account, input.Body, token)
 		releaseUpstreamCtx()
 		if err != nil {
@@ -189,8 +199,14 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if input.Parsed != nil && input.Parsed.AutoWrapperManagedTurn != nil && resp.StatusCode >= 400 {
-		return s.handleErrorResponse(ctx, resp, c, account, input.RequestModel)
+	if input.Parsed != nil && input.Parsed.AutoWrapperManagedTurn != nil && resp.StatusCode >= 400 && s.shouldFailoverUpstreamError(resp.StatusCode) {
+		// The downstream stream has not started. A managed auto turn can be
+		// rebuilt from the complete client transcript on a replacement VM.
+		// Keep ordinary validation errors on the normal error path.
+		body, _ := s.readUpstreamErrorBody(resp)
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		s.handleFailoverSideEffects(ctx, resp, account, input.RequestModel)
+		return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: body}
 	}
 	if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {
@@ -276,13 +292,16 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			autoTurn = input.Parsed.AutoWrapperManagedTurn
 		}
 		streamResult, err := s.handleStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, account, input.StartTime, input.RequestModel, autoTurn)
-		if autoTurn != nil {
+		if autoTurn != nil && (wrapperRecovery(c) == nil || wrapperRecovery(c).committed != autoTurn) {
 			if err == nil && streamResult != nil && !streamResult.clientDisconnect {
 				commitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				commitErr := autoTurn.Commit(commitCtx)
 				cancel()
 				if commitErr != nil {
 					err = commitErr
+				}
+				if err == nil && wrapperRecovery(c) != nil {
+					err = autoTurn.rebaseRecoveryClientHistory(wrapperRecovery(c))
 				}
 			} else if err == nil {
 				// The next downstream transcript must prove receipt of this turn.
@@ -293,11 +312,11 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 					err = commitErr
 				}
 			}
-			if err != nil {
-				autoTurn.Quarantine()
-			}
 		}
 		if err != nil {
+			if autoTurn != nil {
+				autoTurn.Quarantine()
+			}
 			// 流中断时保留已观测到的 usage 与错误一起返回，避免上游已计量的请求
 			// 完全漏记漏计费（issue #5148）。
 			if partial := partialStreamUsageResult(c, resp, streamResult, input.OriginalModel, input.RequestModel, input.StartTime, err); partial != nil {
@@ -415,6 +434,9 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	// 账号级请求头覆写（最终生效，覆盖上面所有来源的同名头）
 	account.ApplyHeaderOverrides(req.Header)
 
+	if account.GetExtraString("wrapper_protocol") == "anthropic-messages-cli-v1" && c.GetBool("wrapper_original_nonstream") {
+		req.Header.Set("X-Wrapper-Response-Mode", "managed-json")
+	}
 	return req, body, nil
 }
 
@@ -427,6 +449,9 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 	model string,
 	autoTurn ...*WrapperManagedAutoTurn,
 ) (*streamingResult, error) {
+	if account.GetExtraString("wrapper_protocol") == "anthropic-messages-cli-v1" && wrapperRecovery(c) != nil && len(autoTurn) > 0 && autoTurn[0] != nil {
+		return s.streamWrapperWithRecovery(ctx, resp, c, account, startTime, autoTurn[0], wrapperRecovery(c))
+	}
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
@@ -462,6 +487,11 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 	usage := &ClaudeUsage{}
 	var firstTokenMs *int
 	clientDisconnected := false
+	cancelOnDisconnect := account.GetExtraString("wrapper_protocol") == "anthropic-messages-cli-v1"
+	var clientDone <-chan struct{}
+	if cancelOnDisconnect && ctx != nil {
+		clientDone = ctx.Done()
+	}
 	sawTerminalEvent := false
 	upstreamError := false
 
@@ -548,6 +578,9 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 
 	for {
 		select {
+		case <-clientDone:
+			_ = resp.Body.Close()
+			return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: true}, fmt.Errorf("wrapper stream canceled by client: %w", ctx.Err())
 		case ev, ok := <-events:
 			if !ok {
 				if !clientDisconnected {
@@ -591,6 +624,11 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			}
 			if data, ok := extractAnthropicSSEDataLine(line); ok {
 				trimmed := strings.TrimSpace(data)
+				if account.GetExtraString("wrapper_protocol") == "anthropic-messages-cli-v1" && gjson.Get(trimmed, "error.type").String() == "rate_limit_error" {
+					stateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+					s.rateLimitService.handleWrapperRateLimit(stateCtx, account, resp.Header, []byte(trimmed))
+					cancel()
+				}
 				if len(autoTurn) > 0 && autoTurn[0] != nil {
 					restored := reverseToolNamesIfPresent(c, []byte(line))
 					if restoredData, ok := extractAnthropicSSEDataLine(string(restored)); ok {
@@ -631,6 +669,10 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 					inPartialEvent = true
 				}
 			}
+			if clientDisconnected && cancelOnDisconnect {
+				_ = resp.Body.Close()
+				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: true}, fmt.Errorf("wrapper stream canceled after downstream write failed: %w", context.Canceled)
+			}
 
 		case <-intervalCh:
 			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
@@ -660,6 +702,10 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			}
 			if _, err := fmt.Fprint(w, "event: ping\ndata: {\"type\": \"ping\"}\n\n"); err != nil {
 				clientDisconnected = true
+				if cancelOnDisconnect {
+					_ = resp.Body.Close()
+					return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: true}, fmt.Errorf("wrapper stream canceled after keepalive write failed: %w", context.Canceled)
+				}
 				logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during keepalive ping, continue draining upstream for usage: account=%d", account.ID)
 				continue
 			}

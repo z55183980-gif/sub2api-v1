@@ -116,8 +116,10 @@ func TestManagedHistorySplitAssistantRejectsChangedOrExtraContent(t *testing.T) 
 	}{
 		{"changed_text", []json.RawMessage{saved[0], json.RawMessage(`{"role":"assistant","content":"different"}`), json.RawMessage(`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"item":1}}]}`), managedAlignmentToolResult("toolu_1")}, "history_changed"},
 		{"reordered_blocks", []json.RawMessage{saved[0], json.RawMessage(`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"item":1}}]}`), json.RawMessage(`{"role":"assistant","content":"checking"}`), managedAlignmentToolResult("toolu_1")}, "history_changed"},
-		{"role_mismatch", []json.RawMessage{saved[0], json.RawMessage(`{"role":"user","content":"checking"}`), managedAlignmentToolResult("toolu_1")}, "history_changed"},
-		{"extra_user", []json.RawMessage{saved[0], saved[1], json.RawMessage(`{"role":"user","content":"unexecuted"}`), managedAlignmentToolResult("toolu_1")}, "extra_history_messages"},
+		{"role_mismatch", []json.RawMessage{saved[0], json.RawMessage(`{"role":"user","content":"checking"}`), json.RawMessage(`{"role":"assistant","content":"checking"}`), managedAlignmentToolResult("toolu_1")}, "history_changed"},
+		{"user_run_hides_saved_assistant", []json.RawMessage{saved[0], json.RawMessage(`{"role":"user","content":"checking"}`), managedAlignmentToolResult("toolu_1")}, "history_length_changed"},
+		{"extra_turn", []json.RawMessage{saved[0], saved[1], json.RawMessage(`{"role":"user","content":"unexecuted"}`), json.RawMessage(`{"role":"assistant","content":"unexecuted"}`), managedAlignmentToolResult("toolu_1")}, "extra_history_messages"},
+		{"fresh_user_run", []json.RawMessage{saved[0], saved[1], managedAlignmentToolResult("toolu_1"), json.RawMessage(`{"role":"user","content":"reminder"}`)}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

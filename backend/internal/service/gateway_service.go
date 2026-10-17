@@ -458,7 +458,7 @@ func allowedAnthropicUpstreamHeader(account *Account, lowerKey string) bool {
 		return false
 	}
 	switch lowerKey {
-	case "x-wrapper-session-id", "x-wrapper-session-mode", "x-wrapper-ack-turn-id", "x-idempotency-key":
+	case "x-wrapper-session-id", "x-wrapper-session-mode", "x-wrapper-auto-managed", "x-wrapper-ack-turn-id", "x-idempotency-key":
 		return true
 	default:
 		return false

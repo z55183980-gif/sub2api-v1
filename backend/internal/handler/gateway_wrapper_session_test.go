@@ -5,8 +5,39 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
+
+func TestAutoWrapperConversationIDFromRealCLIHeaders(t *testing.T) {
+	t.Setenv(service.AutoWrapperManagedEnv, "1")
+	t.Setenv(service.AutoWrapperManagedKeyIDsEnv, "1")
+	metadata := `{"device_id":"same-device","account_uuid":"","session_id":"f804bbdc-8197-469d-8c4d-542cde48203d"}`
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	main := autoWrapperConversationID(c, 1, true, false, metadata)
+	c.Request.Header.Set("X-Claude-Code-Agent-Id", "ae46f70080fa89993")
+	child := autoWrapperConversationID(c, 1, true, false, metadata)
+	if main != "f804bbdc-8197-469d-8c4d-542cde48203d" || child == main || child == "" {
+		t.Fatal("CLI parent and child identity not separated")
+	}
+	if child != service.WrapperManagedConversationID(main, "ae46f70080fa89993") {
+		t.Fatal("routing identity differs from state identity")
+	}
+	if autoWrapperConversationID(c, 1, false, false, metadata) != child {
+		t.Fatal("nonstream identity differs")
+	}
+	t.Setenv("SUB2API_WRAPPER_NONSTREAM_DISABLED", "1")
+	if autoWrapperConversationID(c, 2, true, false, metadata) != "" || autoWrapperConversationID(c, 1, false, false, metadata) != "" || autoWrapperConversationID(c, 1, true, true, metadata) != "" {
+		t.Fatal("isolation changed traffic outside auto-managed scope")
+	}
+	for _, mode := range []string{"stateless", "managed"} {
+		c.Request.Header.Set("X-Wrapper-Session-Mode", mode)
+		if autoWrapperConversationID(c, 1, true, false, metadata) != "" {
+			t.Fatal("explicit mode was overridden")
+		}
+	}
+}
 
 func TestManagedWrapperSessionID(t *testing.T) {
 	gin.SetMode(gin.TestMode)

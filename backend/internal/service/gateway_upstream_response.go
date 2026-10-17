@@ -543,6 +543,10 @@ func (s *GatewayService) handleRetryExhaustedSideEffects(ctx context.Context, re
 
 func (s *GatewayService) handleFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account, requestedModel ...string) {
 	body, _ := s.readUpstreamErrorBody(resp)
+	if resp.StatusCode == 429 && account.GetExtraString("wrapper_protocol") == "anthropic-messages-cli-v1" {
+		s.rateLimitService.handleWrapperRateLimit(ctx, account, resp.Header, body)
+		return
+	}
 	if len(requestedModel) > 0 {
 		s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, requestedModel[0])
 		return

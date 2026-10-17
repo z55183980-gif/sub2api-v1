@@ -36,6 +36,15 @@ func (s *wrapperManagedTestStore) SetWrapperManagedState(_ context.Context, key 
 	s.states[key] = append([]byte(nil), value...)
 	return nil
 }
+func (s *wrapperManagedTestStore) SetWrapperManagedStateOwned(_ context.Context, key, token string, value []byte, _ time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.locks[key] != token {
+		return false, nil
+	}
+	s.states[key] = append([]byte(nil), value...)
+	return true, nil
+}
 func (s *wrapperManagedTestStore) AcquireWrapperManagedLock(_ context.Context, key string, _ time.Duration) (string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -63,6 +72,72 @@ func managedTestContext() *gin.Context {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	return c
+}
+
+func TestWrapperManagedConcurrentBodyStillConflicts(t *testing.T) {
+	store := newWrapperManagedTestStore()
+	ctx := context.Background()
+	key := WrapperManagedAutoKey(42, "custom-agent-body")
+	first, err := beginWrapperManagedAutoTurn(ctx, store, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Release()
+	second, err := beginWrapperManagedAutoTurn(ctx, store, key)
+	if second != nil {
+		second.Release()
+		t.Fatal("concurrent body acquired the same session")
+	}
+	if err == nil || err.Error() != "managed session already has an active turn" {
+		t.Fatalf("expected active-turn conflict, got %v", err)
+	}
+	first.Release()
+	next, err := beginWrapperManagedAutoTurn(ctx, store, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next.Release()
+}
+
+func TestWrapperManagedTruncationRebuildsNativeSession(t *testing.T) {
+	store := newWrapperManagedTestStore()
+	ctx := context.Background()
+	key := WrapperManagedAutoKey(42, "truncated")
+	first, err := beginWrapperManagedAutoTurn(ctx, store, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"model":"sonnet","stream":true,"messages":[{"role":"user","content":"long answer"}]}`)
+	if _, _, err = first.Prepare(ctx, 1, body, managedTestContext()); err != nil {
+		t.Fatal(err)
+	}
+	oldID := first.state.NativeSessionID
+	first.Observe([]byte(`{"type":"message_delta","delta":{"stop_reason":"max_tokens"}}`))
+	first.Observe([]byte(`{"type":"message_stop","wrapper_turn_id":"truncated-receipt","wrapper_session_reset":true}`))
+	if err = first.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if first.IsReady() {
+		t.Fatal("truncated native history must not be resumed")
+	}
+	first.Release()
+	next, err := beginWrapperManagedAutoTurn(ctx, store, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Release()
+	body = []byte(`{"model":"sonnet","stream":true,"messages":[{"role":"user","content":"long answer"},{"role":"assistant","content":"partial"},{"role":"user","content":"continue"}]}`)
+	c := managedTestContext()
+	wire, active, err := next.Prepare(ctx, 1, body, c)
+	if err != nil || !active {
+		t.Fatalf("rebuild: %v %v", active, err)
+	}
+	if next.state.NativeSessionID == oldID || c.GetHeader("X-Wrapper-Ack-Turn-Id") != "" {
+		t.Fatal("reused truncated native session")
+	}
+	if gjson.GetBytes(wire, "messages.#").Int() != 3 {
+		t.Fatal("rebuild must preserve full client transcript")
+	}
 }
 
 func TestWrapperManagedAutoFullHistoryToolHandoff(t *testing.T) {
@@ -214,7 +289,7 @@ func TestWrapperManagedAutoRejectsUnprovenHistory(t *testing.T) {
 	}
 }
 
-func TestWrapperManagedAutoSkipsOversizedBootstrapHistory(t *testing.T) {
+func TestWrapperManagedAutoCompactsOversizedBootstrapHistory(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := context.Background()
 	store := newWrapperManagedTestStore()
@@ -237,17 +312,127 @@ func TestWrapperManagedAutoSkipsOversizedBootstrapHistory(t *testing.T) {
 	}
 	c := managedTestContext()
 	wire, active, err := turn.Prepare(ctx, 1, body, c)
-	if err != nil || active || string(wire) != string(body) {
-		t.Fatalf("oversized bootstrap should stay stateless: active=%v err=%v", active, err)
+	if err != nil || !active || gjson.GetBytes(wire, "messages.#").Int() != 3 {
+		t.Fatalf("oversized bootstrap should enter managed mode: active=%v err=%v", active, err)
 	}
-	if reason, _, _ := turn.Decision(); reason != "bootstrap_history_too_large" {
-		t.Fatalf("unexpected skip reason: %q", reason)
+	if c.GetHeader("X-Wrapper-Session-Mode") != "managed" || c.GetHeader("X-Wrapper-Auto-Managed") != "1" {
+		t.Fatal("oversized bootstrap did not mark the verified managed request")
 	}
-	if c.GetHeader("X-Wrapper-Session-Mode") != "" {
-		t.Fatal("oversized bootstrap set managed session header")
+	stateRaw, err := store.GetWrapperManagedState(ctx, key)
+	if err != nil || len(stateRaw) > wrapperManagedMaxStateBytes || len(stateRaw) == 0 {
+		t.Fatalf("oversized bootstrap state not compacted: err=%v bytes=%d", err, len(stateRaw))
 	}
-	if state, err := store.GetWrapperManagedState(ctx, key); err != nil || len(state) != 0 {
-		t.Fatalf("oversized bootstrap persisted managed state: err=%v bytes=%d", err, len(state))
+	var state wrapperManagedState
+	if err := json.Unmarshal(stateRaw, &state); err != nil || len(state.Messages) != 0 || len(state.Proofs) != 2 {
+		t.Fatalf("oversized bootstrap should retain proofs only: err=%v messages=%d proofs=%d", err, len(state.Messages), len(state.Proofs))
+	}
+	turn.Observe([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"answer"}}`))
+	turn.Observe([]byte(`{"type":"content_block_stop","index":0}`))
+	turn.Observe([]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`))
+	turn.Observe([]byte(`{"type":"message_stop","wrapper_turn_id":"11111111-1111-4111-8111-111111111111"}`))
+	if err := turn.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	turn.Release()
+	second, err := beginWrapperManagedAutoTurn(ctx, store, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Release()
+	secondBody, _ := json.Marshal(map[string]any{"model": "sonnet", "stream": true, "messages": []map[string]any{
+		{"role": "user", "content": strings.Repeat("a", wrapperManagedMaxStateBytes)},
+		{"role": "assistant", "content": "old answer"},
+		{"role": "user", "content": "new question"},
+		{"role": "assistant", "content": "answer"},
+		{"role": "user", "content": "follow up"},
+	}})
+	wire, active, err = second.Prepare(ctx, 1, secondBody, managedTestContext())
+	if err != nil || !active || gjson.GetBytes(wire, "messages.#").Int() != 1 || gjson.GetBytes(wire, "messages.0.content").String() != "follow up" {
+		t.Fatalf("oversized follow-up did not resume: active=%v err=%v", active, err)
+	}
+}
+
+func TestWrapperManagedAutoCompactProofRejectsChangedHistory(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	store := newWrapperManagedTestStore()
+	key := WrapperManagedAutoKey(42, "conversation-large-changed")
+	previous := []json.RawMessage{
+		json.RawMessage(`{"role":"user","content":"original"}`),
+		json.RawMessage(`{"role":"assistant","content":[{"type":"text","text":"first"},{"type":"text","text":"second"}]}`),
+	}
+	state := wrapperManagedState{AccountID: 1, NativeSessionID: "sub2api-existing", Model: "sonnet", Phase: "ready", Receipt: "11111111-1111-4111-8111-111111111111", Proofs: managedProofs(previous)}
+	encoded, _ := json.Marshal(state)
+	if err := store.SetWrapperManagedState(ctx, key, encoded, wrapperManagedTTL); err != nil {
+		t.Fatal(err)
+	}
+	turn, err := beginWrapperManagedAutoTurn(ctx, store, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer turn.Release()
+	body := []byte(`{"model":"sonnet","stream":true,"messages":[{"role":"user","content":"changed"},{"role":"assistant","content":[{"type":"text","text":"first"}]},{"role":"assistant","content":[{"type":"text","text":"second"}]},{"role":"user","content":"next"}]}`)
+	wire, active, err := turn.Prepare(ctx, 1, body, managedTestContext())
+	if err != nil || !active || gjson.GetBytes(wire, "messages.#").Int() != 4 {
+		t.Fatalf("changed compact history should bootstrap: active=%v err=%v", active, err)
+	}
+	if turn.skipReason != "history_changed" || turn.state.NativeSessionID == state.NativeSessionID {
+		t.Fatalf("changed history resumed original native session: reason=%q native=%q", turn.skipReason, turn.state.NativeSessionID)
+	}
+}
+
+func TestWrapperManagedAutoCompactProofMatchesSplitAssistant(t *testing.T) {
+	previous := []json.RawMessage{
+		json.RawMessage(`{"role":"user","content":"original"}`),
+		json.RawMessage(`{"role":"assistant","content":[{"type":"text","text":"first"},{"type":"text","text":"second"}]}`),
+	}
+	request := []json.RawMessage{
+		previous[0],
+		json.RawMessage(`{"role":"assistant","content":[{"type":"text","text":"first"}]}`),
+		json.RawMessage(`{"role":"assistant","content":[{"type":"text","text":"second"}]}`),
+		json.RawMessage(`{"role":"user","content":"next"}`),
+	}
+	matched, merged, reason := matchManagedHistoryProofs(request, managedProofs(previous))
+	if reason != "" || matched != 3 || merged != 1 {
+		t.Fatalf("split assistant proof mismatch: matched=%d merged=%d reason=%q", matched, merged, reason)
+	}
+}
+
+func TestWrapperManagedAutoAccountChangeSeedsNewSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	store := newWrapperManagedTestStore()
+	key := WrapperManagedAutoKey(42, "conversation-account-change")
+	first, err := beginWrapperManagedAutoTurn(ctx, store, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstBody := []byte(`{"model":"sonnet","stream":true,"messages":[{"role":"user","content":"one"}]}`)
+	_, active, err := first.Prepare(ctx, 5, firstBody, managedTestContext())
+	if err != nil || !active {
+		t.Fatalf("first prepare: active=%v err=%v", active, err)
+	}
+	oldID := first.state.NativeSessionID
+	first.Observe([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"answer"}}`))
+	first.Observe([]byte(`{"type":"content_block_stop","index":0}`))
+	first.Observe([]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`))
+	first.Observe([]byte(`{"type":"message_stop","wrapper_turn_id":"11111111-1111-4111-8111-111111111111"}`))
+	if err := first.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	first.Release()
+	second, err := beginWrapperManagedAutoTurn(ctx, store, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Release()
+	body := []byte(`{"model":"sonnet","stream":true,"messages":[{"role":"user","content":"one"},{"role":"assistant","content":"answer"},{"role":"user","content":"two"}]}`)
+	wire, active, err := second.Prepare(ctx, 7, body, managedTestContext())
+	if err != nil || !active || second.state.NativeSessionID == oldID || gjson.GetBytes(wire, "messages.#").Int() != 3 {
+		t.Fatalf("replacement account did not bootstrap full history: active=%v err=%v", active, err)
+	}
+	if reason, _, _ := second.Decision(); reason != "account_changed" {
+		t.Fatalf("unexpected account change reason: %q", reason)
 	}
 }
 

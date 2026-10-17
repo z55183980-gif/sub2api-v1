@@ -62,6 +62,7 @@ var headerOverrideBlockedNames = map[string]struct{}{
 	"x-claude-code-session-id": {},
 	"x-wrapper-session-id":     {},
 	"x-wrapper-session-mode":   {},
+	"x-wrapper-auto-managed":   {},
 	"x-wrapper-ack-turn-id":    {},
 	"x-client-request-id":      {},
 	"x-grok-conv-id":           {},

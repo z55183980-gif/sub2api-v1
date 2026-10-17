@@ -1,0 +1,16 @@
+[Unit]
+Description=Allow isolated Sub2API to reach its bound Wrapper VM
+After=network-online.target docker.service libvirtd.service
+Wants=network-online.target
+Requires=docker.service libvirtd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/sub2api-local-s4-20260924/vm-access.py
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=90s
+
+[Install]
+WantedBy=multi-user.target

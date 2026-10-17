@@ -37,6 +37,17 @@ import (
 
 const gatewayCompatibilityMetricsLogInterval = 1024
 
+func autoWrapperConversationID(c *gin.Context, keyID int64, streaming, explicitManaged bool, metadataUserID string) string {
+	if explicitManaged || (!streaming && os.Getenv("SUB2API_WRAPPER_NONSTREAM_DISABLED") == "1") || !service.AutoWrapperManagedEnabledForKey(keyID) || c.GetHeader("X-Wrapper-Session-Mode") != "" {
+		return ""
+	}
+	uid := service.ParseMetadataUserID(metadataUserID)
+	if uid == nil || uid.SessionID == "" {
+		return ""
+	}
+	return service.WrapperManagedConversationID(uid.SessionID, c.GetHeader("X-Claude-Code-Agent-Id"))
+}
+
 func managedWrapperSessionID(c *gin.Context) (string, bool, error) {
 	mode := c.GetHeader("X-Wrapper-Session-Mode")
 	if mode != "" && mode != "stateless" && mode != "managed" {
@@ -308,7 +319,94 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	if managedWrapperSession {
 		parsedReq.SessionContext.WrapperSessionID = wrapperSessionID
 	}
+	// This header is set only after the automatic manager has proved the full
+	// downstream history. Never accept it from the client.
+	c.Request.Header.Del("X-Wrapper-Auto-Managed")
+	summaryRoutingID, summaryBody, summaryErr := isolateWrapperSummary(c, apiKey.ID, body, parsedReq.MetadataUserID)
+	if summaryErr != nil {
+		h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to prepare agent summary")
+		return
+	}
+	if summaryRoutingID != "" {
+		if err := parsedReq.ReplaceBody(summaryBody); err != nil {
+			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to prepare agent summary")
+			return
+		}
+		body = summaryBody
+	}
+	titleRoutingID := isolateWrapperTitle(c, apiKey.ID, body, parsedReq.MetadataUserID)
+	classifierRoutingID := isolateWrapperClassifier(c, apiKey.ID, body, parsedReq.MetadataUserID)
 	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
+	if titleRoutingID != "" {
+		sessionHash = titleRoutingID
+		reqLog.Info("wrapper.auxiliary_request", zap.String("request_class", "session_title"),
+			zap.String("rule", "claude-title-v1"), zap.String("session_mode", "stateless"))
+	}
+	if summaryRoutingID != "" {
+		sessionHash = summaryRoutingID
+		reqLog.Info("wrapper.auxiliary_request", zap.String("request_class", "agent_summary"),
+			zap.String("rule", "claude-agent-summary-v2"), zap.String("session_mode", "stateless"))
+	}
+	if classifierRoutingID != "" {
+		sessionHash = classifierRoutingID
+		reqLog.Info("wrapper.auxiliary_request", zap.String("request_class", "auto_permission_classifier"),
+			zap.String("rule", "claude-auto-classifier-v1"), zap.String("session_mode", "stateless"))
+	}
+	// Claude's subagents share metadata.session_id with their parent. Scope both
+	// sticky routing and durable managed state by the same stable agent identity.
+	// Do not change explicit Wrapper sessions or unrelated gateway traffic.
+	autoManagedConversationID := autoWrapperConversationID(c, apiKey.ID, reqStream, managedWrapperSession, parsedReq.MetadataUserID)
+	desktopBranchResolved := false
+	var jsonReplayLease *service.WrapperJSONReplay
+	if wrapperJSONReplayEnabled(c, autoManagedConversationID, reqStream) {
+		waitCtx, waitCancel := context.WithTimeout(c.Request.Context(), service.WrapperJSONExecutionBudget())
+		lease, cached, replayErr := h.gatewayService.BeginWrapperScopedJSONReplay(waitCtx, apiKey.ID, c.GetHeader("X-Claude-Code-Agent-Id"), c.GetHeader("anthropic-beta"), body)
+		waitCancel()
+		if replayErr != nil {
+			if errors.Is(replayErr, context.DeadlineExceeded) {
+				h.errorResponse(c, http.StatusGatewayTimeout, "request_running", "Original JSON execution exceeded this connection's wait budget; retry the same request")
+			} else if !errors.Is(replayErr, context.Canceled) {
+				h.errorResponse(c, http.StatusServiceUnavailable, "replay_store_unavailable", "Unable to access the saved JSON execution; retry the same request")
+			}
+			return
+		}
+		if cached != nil {
+			c.Header("X-Wrapper-Replayed", "true")
+			c.Data(http.StatusOK, "application/json", cached)
+			reqLog.Info("wrapper.json_replay")
+			return
+		}
+		// A JSON client/proxy can time out before inference. Retain a bounded
+		// execution and store the result so the next connection can retrieve it.
+		ownerCtx, ownerCancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), service.WrapperJSONExecutionBudget())
+		c.Request = c.Request.WithContext(lease.GuardContext(ownerCtx))
+		jsonReplayLease = lease
+		defer func() {
+			lease.Release()
+			ownerCancel()
+		}()
+	}
+	if autoManagedConversationID != "" && c.GetHeader("X-Claude-Code-Agent-Id") == "" &&
+		os.Getenv("SUB2API_WRAPPER_DESKTOP_BRANCHES") == "1" &&
+		strings.HasPrefix(c.GetHeader("User-Agent"), "claude-cli/") && strings.Contains(c.GetHeader("User-Agent"), "claude-desktop-3p") {
+
+		branch, source, branchErr := h.gatewayService.ResolveWrapperManagedBranch(c.Request.Context(), apiKey.ID, autoManagedConversationID, body, c.GetHeader("anthropic-beta"), c.GetHeader("User-Agent"))
+		if branchErr != nil {
+			var payloadErr *service.WrapperManagedPayloadError
+			if errors.As(branchErr, &payloadErr) {
+				h.errorResponse(c, payloadErr.Status, "invalid_request_error", payloadErr.Reason)
+			} else {
+				h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Managed branch resolver unavailable")
+			}
+			return
+		}
+		autoManagedConversationID, sessionHash = branch, branch
+		desktopBranchResolved = true
+		reqLog.Info("wrapper.managed_branch", zap.String("branch_id", branch), zap.String("source", source))
+	}
+	if autoManagedConversationID != "" && c.GetHeader("X-Claude-Code-Agent-Id") != "" {
+		sessionHash = autoManagedConversationID
+	}
 
 	// [DEBUG-STICKY] 打印会话 hash 生成结果
 	reqLog.Info("sticky.session_hash_generated",
@@ -353,19 +451,6 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 判断是否真的绑定了粘性会话：有 sessionKey 且已经绑定到某个账号
 	hasBoundSession := sessionKey != "" && sessionBoundAccountID > 0
 	autoManagedExistingAccountID := int64(0)
-	if !managedWrapperSession && reqStream && service.AutoWrapperManagedEnabledForKey(apiKey.ID) && c.GetHeader("X-Wrapper-Session-Mode") == "" {
-		if uid := service.ParseMetadataUserID(parsedReq.MetadataUserID); uid != nil && uid.SessionID != "" {
-			key := service.WrapperManagedAutoKey(apiKey.ID, uid.SessionID)
-			exists, accountID, stateErr := h.gatewayService.WrapperManagedAutoState(c.Request.Context(), key)
-			if stateErr != nil {
-				h.handleStreamingAwareError(c, http.StatusConflict, "session_state_error", stateErr.Error(), streamStarted)
-				return
-			}
-			if exists {
-				autoManagedExistingAccountID = accountID
-			}
-		}
-	}
 
 	if platform == service.PlatformGemini {
 		fs := NewFailoverState(h.maxAccountSwitchesGemini, hasBoundSession)
@@ -680,6 +765,21 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 成功请求保持既有空闲超时语义（会话按最后活动时间过期）。
 	sessionSlotAccounts := make(map[int64]*service.Account)
 	upstreamServedSession := false
+	autoManagedAttemptHeaders := false
+	var autoManagedTurn *service.WrapperManagedAutoTurn
+	var nonstreamResponse *wrapperJSONResponse
+	// Server-owned hint: clients cannot enable early streaming with a header.
+	c.Set("wrapper_original_nonstream", !reqStream)
+	var autoManagedTurns []*service.WrapperManagedAutoTurn
+	defer func() {
+		for _, turn := range autoManagedTurns {
+			turn.Release()
+		}
+	}()
+	if autoManagedConversationID != "" && !managedWrapperSession && os.Getenv("SUB2API_WRAPPER_STREAM_RECOVERY") == "1" {
+		service.EnableWrapperStreamRecovery(c, body)
+		defer service.FinishWrapperStreamRecovery(c)
+	}
 	defer func() {
 		if upstreamServedSession {
 			return
@@ -692,17 +792,73 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	for {
 		maxSwitches := h.maxAccountSwitches
-		if managedWrapperSession || autoManagedExistingAccountID > 0 {
-			maxSwitches = 0 // history lives on one Wrapper VM; never fail over to another VM
+		if managedWrapperSession {
+			maxSwitches = 0 // Explicit managed sessions cannot be rebuilt from a full transcript.
 		}
 		fs := NewFailoverState(maxSwitches, hasBoundSession)
 		retryWithFallback := false
 
 		for {
+			if autoManagedAttemptHeaders {
+				// A previous account attempt may have installed managed headers.
+				// Every retry starts from the untouched downstream transcript.
+				c.Request.Header.Del("X-Wrapper-Session-Mode")
+				c.Request.Header.Del("X-Wrapper-Session-Id")
+				c.Request.Header.Del("X-Wrapper-Ack-Turn-Id")
+				c.Request.Header.Del("X-Wrapper-Auto-Managed")
+				c.Request.Header.Del("X-Claude-Code-Session-Id")
+				autoManagedAttemptHeaders = false
+			}
 			attemptParsedReq, err := parsedReq.CloneForBody(body)
 			if err != nil {
 				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 				return
+			}
+
+			// Reserve the conversation before selection can acquire an account slot.
+			// Keep the reservation through selection retries; reacquire after failover.
+			if autoManagedConversationID != "" && autoManagedTurn == nil {
+				key := service.WrapperManagedAutoKey(apiKey.ID, autoManagedConversationID)
+				turn, wait, beginErr := h.gatewayService.BeginWrapperManagedAutoTurn(c.Request.Context(), key)
+				outcome := "acquired"
+				if beginErr != nil {
+					outcome = "store_error"
+					if errors.Is(beginErr, service.ErrWrapperManagedBusy) {
+						outcome = "timeout"
+					}
+					if c.Request.Context().Err() != nil {
+						outcome = "canceled"
+					}
+				}
+				reqLog.Info("wrapper.managed_lock_wait", zap.String("session_fingerprint", key[:12]),
+					zap.Int("attempts", wait.Attempts), zap.Int64("wait_ms", wait.Elapsed.Milliseconds()), zap.String("outcome", outcome))
+				if beginErr != nil {
+					h.handleWrapperManagedBeginError(c, beginErr, streamStarted)
+					return
+				}
+				autoManagedTurn = turn
+				c.Request = c.Request.WithContext(turn.GuardContext(c.Request.Context()))
+				if desktopBranchResolved {
+					turn.PreserveBranch()
+				}
+				autoManagedTurns = append(autoManagedTurns, turn)
+				autoManagedExistingAccountID = turn.AccountID()
+				// The preceding owner may have changed accounts while we waited.
+				sessionBoundAccountID, err = h.gatewayService.GetCachedSessionAccountID(c.Request.Context(), currentAPIKey.GroupID, sessionKey)
+				if err != nil && !errors.Is(err, service.ErrStickySessionNotFound) {
+					h.handleWrapperManagedBeginError(c, err, streamStarted)
+					return
+				}
+				if autoManagedExistingAccountID > 0 {
+					sessionBoundAccountID = autoManagedExistingAccountID
+				}
+				hasBoundSession = sessionKey != "" && sessionBoundAccountID > 0
+				fs.hasBoundSession = hasBoundSession
+				groupID := int64(0)
+				if currentAPIKey.GroupID != nil {
+					groupID = *currentAPIKey.GroupID
+				}
+				c.Request = c.Request.WithContext(service.WithPrefetchedStickySession(c.Request.Context(), sessionBoundAccountID, groupID, h.metadataBridgeEnabled()))
 			}
 
 			// 选择支持该模型的账号
@@ -753,9 +909,19 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 			}
 			account := selection.Account
-			if (managedWrapperSession || autoManagedExistingAccountID > 0) && (account.GetExtraString("wrapper_protocol") != "anthropic-messages-cli-v1" ||
-				(autoManagedExistingAccountID > 0 && account.ID != autoManagedExistingAccountID) ||
-				(autoManagedExistingAccountID == 0 && sessionBoundAccountID > 0 && account.ID != sessionBoundAccountID)) {
+			if (autoManagedExistingAccountID > 0 || service.WrapperStreamRecoveryActive(c)) && !managedWrapperSession && account.GetExtraString("wrapper_protocol") != "anthropic-messages-cli-v1" {
+				if selection.Acquired && selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				h.gatewayService.ReleaseAccountSession(context.Background(), account, sessionKey)
+				fs.FailedAccountIDs[account.ID] = struct{}{}
+				if err := h.gatewayService.RestoreManagedWrapperSessionBinding(context.Background(), currentAPIKey.GroupID, sessionKey, autoManagedExistingAccountID); err != nil {
+					reqLog.Warn("gateway.wrapper_restore_sticky_failed", zap.Error(err))
+				}
+				continue
+			}
+			if managedWrapperSession && (account.GetExtraString("wrapper_protocol") != "anthropic-messages-cli-v1" ||
+				sessionBoundAccountID > 0 && account.ID != sessionBoundAccountID) {
 				if selection.Acquired && selection.ReleaseFunc != nil {
 					selection.ReleaseFunc()
 				}
@@ -771,6 +937,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				return
 			}
 			setOpsSelectedAccount(c, account.ID, account.Platform)
+			if autoManagedTurn != nil && account.GetExtraString("wrapper_protocol") != "anthropic-messages-cli-v1" {
+				autoManagedTurn.Release()
+				autoManagedTurn = nil
+			}
 
 			// [DEBUG-STICKY] 打印账号选择结果
 			reqLog.Info("sticky.account_selected",
@@ -949,22 +1119,17 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				return
 			}
 			attemptBody := attemptParsedReq.Body.Bytes()
-			if !managedWrapperSession && reqStream && os.Getenv(service.AutoWrapperManagedEnv) == "1" &&
+			if !managedWrapperSession && os.Getenv(service.AutoWrapperManagedEnv) == "1" &&
 				service.AutoWrapperManagedEnabledForKey(apiKey.ID) &&
 				account.GetExtraString("wrapper_protocol") == "anthropic-messages-cli-v1" &&
 				c.GetHeader("X-Wrapper-Session-Mode") == "" {
-				uid := service.ParseMetadataUserID(parsedReq.MetadataUserID)
-				if uid != nil && uid.SessionID != "" && gjson.GetBytes(attemptBody, "metadata.user_id").Exists() {
-					key := service.WrapperManagedAutoKey(apiKey.ID, uid.SessionID)
-					turn, beginErr := h.gatewayService.BeginWrapperManagedAutoTurn(c.Request.Context(), key)
-					if beginErr != nil {
-						h.handleStreamingAwareError(c, http.StatusConflict, "session_state_error", beginErr.Error(), streamStarted)
-						return
-					}
-					defer turn.Release()
+				if autoManagedConversationID != "" && gjson.GetBytes(attemptBody, "metadata.user_id").Exists() {
+					key := service.WrapperManagedAutoKey(apiKey.ID, autoManagedConversationID)
+					turn := autoManagedTurn
 					updated, active, prepareErr := turn.Prepare(c.Request.Context(), account.ID, attemptBody, c)
 					skipReason, inputMessages, normalizedMessages := turn.Decision()
 					matchedMessages, mergedAssistants, recentShape := turn.HistoryDecision()
+					freshMessages, historyMismatch := turn.FreshDecision()
 					reqLog.Info("wrapper.managed_auto_decision",
 						zap.Bool("active", active),
 						zap.String("skip_reason", skipReason),
@@ -973,15 +1138,54 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Int("matched_history_messages", matchedMessages),
 						zap.Int("merged_assistant_messages", mergedAssistants),
 						zap.String("recent_message_shape", recentShape),
+						zap.Int("fresh_messages", freshMessages),
+						zap.String("history_mismatch", historyMismatch),
 						zap.Int64("account_id", account.ID),
 						zap.String("session_fingerprint", key[:12]),
+						zap.Bool("agent_scoped", c.GetHeader("X-Claude-Code-Agent-Id") != ""),
 						zap.Bool("has_receipt", c.GetHeader("X-Wrapper-Ack-Turn-Id") != ""),
 					)
 					if prepareErr != nil {
+						if errors.Is(prepareErr, service.ErrWrapperManagedBusy) || c.Request.Context().Err() != nil {
+							h.handleWrapperManagedBeginError(c, prepareErr, streamStarted)
+							return
+						}
+						var payloadErr *service.WrapperManagedPayloadError
+						if errors.As(prepareErr, &payloadErr) {
+							h.handleStreamingAwareError(c, payloadErr.Status, "invalid_request_error", payloadErr.Error(), streamStarted)
+							return
+						}
 						h.handleStreamingAwareError(c, http.StatusConflict, "session_state_error", prepareErr.Error(), streamStarted)
 						return
 					}
 					if active {
+						if !reqStream {
+							updated, prepareErr = wrapperStreamingBody(updated)
+							if prepareErr != nil {
+								turn.Quarantine()
+								h.errorResponse(c, 500, "api_error", "Failed to prepare internal stream")
+								return
+							}
+							if nonstreamResponse == nil {
+								nonstreamResponse = newWrapperJSONResponse(c.Writer)
+								if jsonReplayLease != nil {
+									nonstreamResponse.persist = func(data []byte) error {
+										persistCtx, done := context.WithTimeout(context.Background(), 3*time.Second)
+										defer done()
+										return jsonReplayLease.Save(persistCtx, data)
+									}
+								}
+								c.Writer = nonstreamResponse
+								defer func() {
+									if err := nonstreamResponse.finish(c.Request.Context()); err != nil && autoManagedTurn != nil && !nonstreamResponse.durable {
+										autoManagedTurn.Quarantine()
+									}
+									c.Writer = nonstreamResponse.ResponseWriter
+								}()
+								c.Header("X-Wrapper-Response-Mode", "managed-json")
+							}
+						}
+						autoManagedAttemptHeaders = true
 						attemptParsedReq.AutoWrapperManagedTurn = turn
 						if err := attemptParsedReq.ReplaceBody(updated); err != nil {
 							turn.Quarantine()
@@ -989,6 +1193,12 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 							return
 						}
 						attemptBody = attemptParsedReq.Body.Bytes()
+					} else if service.WrapperStreamRecoveryActive(c) {
+						h.handleStreamingAwareError(c, 409, "session_state_error", "Replacement account could not safely restore conversation history", true)
+						return
+					} else {
+						turn.Release()
+						autoManagedTurn = nil
 					}
 				}
 			}
@@ -1009,6 +1219,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				result, err = h.antigravityGatewayService.Forward(requestCtx, c, account, attemptBody, hasBoundSession)
 			} else {
 				result, err = h.gatewayService.Forward(requestCtx, c, account, attemptParsedReq)
+			}
+			if nonstreamResponse != nil && result != nil {
+				result.Stream = false // Usage records describe the downstream protocol.
 			}
 
 			// 兜底释放串行锁（正常情况已通过回调提前释放）
@@ -1083,6 +1296,62 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 
 			if err != nil {
+				var bridgeErr *service.WrapperToolBridgeError
+				var partialErr *service.WrapperPartialResponseError
+				if errors.As(err, &partialErr) {
+					if result != nil {
+						submitForwardUsage(result)
+					}
+					if autoManagedTurn != nil {
+						autoManagedTurn.Quarantine()
+					}
+					reqLog.Warn("wrapper.partial_response", zap.Int64("account_id", account.ID), zap.Bool("retry", false))
+					h.handleStreamingAwareError(c, 502, "managed_partial_response", partialErr.Error(), c.Writer.Written() || streamStarted)
+					return
+				}
+				if errors.As(err, &bridgeErr) {
+					if result != nil {
+						submitForwardUsage(result)
+					}
+					nextBody, recoveryErr := service.AdvanceWrapperToolBridgeRecovery(c, bridgeErr)
+					reqLog.Warn("wrapper.tool_bridge_violation", zap.Int64("account_id", account.ID), zap.Bool("retry", recoveryErr == nil), zap.Bool("retry_safe", bridgeErr.RetrySafe))
+					if recoveryErr != nil || autoManagedTurn == nil {
+						h.handleStreamingAwareError(c, 502, "client_tool_bridge_violation", "Client tool bridge failed; the request was not replayed", c.Writer.Written() || streamStarted)
+						return
+					}
+					// Forward already quarantined the failed generation. Retain
+					// the lock so another request cannot enter between attempts.
+					autoManagedTurn.ResetBridgeAttempt()
+					body = nextBody
+					continue
+				}
+				var quotaStreamErr *service.WrapperStreamLimitError
+				if errors.As(err, &quotaStreamErr) {
+					streamStarted = true
+					if result != nil {
+						submitForwardUsage(result)
+					}
+					if attemptParsedReq.AutoWrapperManagedTurn != nil {
+						attemptParsedReq.AutoWrapperManagedTurn.Quarantine()
+						attemptParsedReq.AutoWrapperManagedTurn.Release()
+						autoManagedTurn = nil
+					}
+					nextBody, recoveryErr := service.AdvanceWrapperStreamRecovery(c)
+					if recoveryErr != nil {
+						h.handleStreamingAwareError(c, 429, "rate_limit_error", recoveryErr.Error(), true)
+						return
+					}
+					quotaFailover := &service.UpstreamFailoverError{StatusCode: 429, ResponseBody: quotaStreamErr.Body}
+					if fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, 0, quotaFailover) != FailoverContinue {
+						h.handleFailoverExhausted(c, quotaFailover, account.Platform, true)
+						return
+					}
+					body = nextBody
+					h.gatewayService.ReleaseAccountSession(context.Background(), account, sessionKey)
+					delete(sessionSlotAccounts, account.ID)
+					reqLog.Info("wrapper.stream_quota_recovery", zap.Int64("account_id", account.ID), zap.Int("switch_count", fs.SwitchCount))
+					continue
+				}
 				// Beta policy block: return 400 immediately, no failover
 				var betaBlockedErr *service.BetaBlockedError
 				if errors.As(err, &betaBlockedErr) {
@@ -1144,14 +1413,24 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
-					if attemptParsedReq.AutoWrapperManagedTurn != nil {
-						h.handleFailoverExhausted(c, failoverErr, account.Platform, streamStarted)
-						return
-					}
 					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
 					if c.Writer.Size() != writerSizeBeforeForward {
 						h.handleFailoverExhausted(c, failoverErr, account.Platform, true)
 						return
+					}
+					if attemptParsedReq.AutoWrapperManagedTurn != nil {
+						attemptParsedReq.AutoWrapperManagedTurn.Quarantine()
+						attemptParsedReq.AutoWrapperManagedTurn.Release()
+						autoManagedTurn = nil
+					}
+					if failoverErr.StatusCode == 429 && attemptParsedReq.AutoWrapperManagedTurn != nil && service.WrapperStreamRecoveryEnabled(c) {
+						nextBody, recoveryErr := service.AdvanceWrapperStreamRecovery(c)
+						if recoveryErr != nil {
+							h.handleStreamingAwareError(c, 429, "rate_limit_error", recoveryErr.Error(), streamStarted)
+							return
+						}
+						body = nextBody
+						failoverErr.RetryableOnSameAccount = false
 					}
 					action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, account.GetPoolModeRetryCount(), failoverErr)
 					switch action {
@@ -1217,7 +1496,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			// - 选中账号与粘性账号一致：刷新 TTL
 			// - 粘性账号因负载/RPM 被跳过、选中了其他账号：不覆盖原绑定，
 			//   下次请求粘性账号恢复后仍可命中
-			if sessionKey != "" && (sessionBoundAccountID == 0 || sessionBoundAccountID == account.ID) {
+			// - 自动托管会话成功在新 Wrapper 上重建：绑定新账号，后续增量请求继续命中它
+			if sessionKey != "" && (sessionBoundAccountID == 0 || sessionBoundAccountID == account.ID ||
+				(autoManagedExistingAccountID > 0 && account.ID != autoManagedExistingAccountID && attemptParsedReq.AutoWrapperManagedTurn != nil)) {
 				if err := h.gatewayService.BindStickySession(c.Request.Context(), currentAPIKey.GroupID, sessionKey, account.ID); err != nil {
 					reqLog.Warn("gateway.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				}

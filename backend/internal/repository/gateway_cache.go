@@ -84,6 +84,16 @@ func (c *gatewayCache) SetWrapperManagedState(ctx context.Context, key string, v
 	return c.rdb.Set(ctx, wrapperManagedPrefix+"state:"+key, value, ttl).Err()
 }
 
+var setWrapperManagedStateOwnedScript = redis.NewScript(`
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+redis.call('SET', KEYS[2], ARGV[2], 'PX', ARGV[3])
+return 1`)
+
+func (c *gatewayCache) SetWrapperManagedStateOwned(ctx context.Context, key, token string, value []byte, ttl time.Duration) (bool, error) {
+	n, err := setWrapperManagedStateOwnedScript.Run(ctx, c.rdb, []string{wrapperManagedPrefix + "lock:" + key, wrapperManagedPrefix + "state:" + key}, token, value, ttl.Milliseconds()).Int64()
+	return n == 1, err
+}
+
 func (c *gatewayCache) AcquireWrapperManagedLock(ctx context.Context, key string, ttl time.Duration) (string, bool, error) {
 	random := make([]byte, 16)
 	if _, err := rand.Read(random); err != nil {
