@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -666,6 +667,15 @@ func normalizedWrapperManagedBody(body []byte, betaHeader string) ([]byte, error
 	body = FilterWebSearchHistoryBlocks(body, gjson.GetBytes(body, "model").String())
 	body = stripDeferredToolCacheControl(body)
 	var err error
+	if system := gjson.GetBytes(body, "system"); system.Exists() {
+		normalized := wrapperSystemWithoutTelemetry(json.RawMessage(system.Raw))
+		if !bytes.Equal(normalized, []byte(system.Raw)) {
+			body, err = sjson.SetRawBytes(body, "system", normalized)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
 	body, err = normalizeWrapperMessages(body)
 	if err != nil {
 		return nil, err
@@ -781,6 +791,7 @@ func managedCanonicalAssistant(raw json.RawMessage) json.RawMessage {
 }
 
 func equalManagedSystem(a, b json.RawMessage) bool {
+	a, b = wrapperSystemWithoutTelemetry(a), wrapperSystemWithoutTelemetry(b)
 	if len(a) == 0 || string(a) == "null" {
 		return len(b) == 0 || string(b) == "null"
 	}

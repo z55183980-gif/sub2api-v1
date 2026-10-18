@@ -87,6 +87,54 @@ func wrapperAffinityTools(raw json.RawMessage) json.RawMessage {
 	return normalized
 }
 
+// Strip transport hints only at protocol block boundaries, never inside tool
+// inputs, schemas or result text. RawMessage preserves large numeric arguments.
+func wrapperAffinityContent(raw json.RawMessage) json.RawMessage {
+	var blocks []map[string]json.RawMessage
+	if json.Unmarshal(raw, &blocks) != nil {
+		return raw
+	}
+	changed := false
+	for _, block := range blocks {
+		if _, ok := block["cache_control"]; ok {
+			delete(block, "cache_control")
+			changed = true
+		}
+		if string(block["type"]) == `"tool_result"` {
+			content := wrapperAffinityContent(block["content"])
+			if !bytes.Equal(content, block["content"]) {
+				block["content"] = content
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return raw
+	}
+	normalized, err := json.Marshal(blocks)
+	if err != nil {
+		return raw
+	}
+	return normalized
+}
+
+func wrapperAffinityMessage(raw json.RawMessage) json.RawMessage {
+	var message map[string]json.RawMessage
+	if json.Unmarshal(raw, &message) != nil {
+		return raw
+	}
+	content := wrapperAffinityContent(message["content"])
+	if bytes.Equal(content, message["content"]) {
+		return raw
+	}
+	message["content"] = content
+	normalized, err := json.Marshal(message)
+	if err != nil {
+		return raw
+	}
+	return normalized
+}
+
 // ResolveWrapperStatelessAffinity accepts only requests with no reliable session
 // ID. Canonical JSON sorts object keys but preserves text, array order, tool IDs
 // and all history content. A modified/compacted history gets only the longest
@@ -105,6 +153,7 @@ func (s *GatewayService) ResolveWrapperStatelessAffinity(apiKeyID int64, groupID
 		return nil
 	}
 	b.Tools = wrapperAffinityTools(b.Tools)
+	b.System = wrapperAffinityContent(wrapperSystemWithoutTelemetry(b.System))
 	ns := fmt.Sprintf("%d:%d:%s:", apiKeyID, derefGroupID(groupID), b.Model)
 	for _, v := range []json.RawMessage{b.System, b.Tools, b.ToolChoice, b.Thinking, b.OutputConfig} {
 		ns += affinityHash(canonicalAffinity(v)) + ":"
@@ -112,7 +161,7 @@ func (s *GatewayService) ResolveWrapperStatelessAffinity(apiKeyID int64, groupID
 	prev := affinityHash([]byte(ns))
 	a := &WrapperStatelessAffinity{MessageCount: len(b.Messages), SystemHash: affinityHash(canonicalAffinity(b.System)), ToolsHash: affinityHash(canonicalAffinity(b.Tools)), Source: "new_history"}
 	for _, m := range b.Messages {
-		prev = affinityHash(append([]byte(prev+":"), canonicalAffinity(m)...))
+		prev = affinityHash(append([]byte(prev+":"), canonicalAffinity(wrapperAffinityMessage(m))...))
 		a.PrefixHashes = append(a.PrefixHashes, "wrapper-prefix-v1:"+prev)
 	}
 	a.Key = a.PrefixHashes[len(a.PrefixHashes)-1]

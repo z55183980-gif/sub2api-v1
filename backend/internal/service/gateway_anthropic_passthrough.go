@@ -208,6 +208,12 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		// Keep ordinary validation errors on the normal error path.
 		body, _ := s.readUpstreamErrorBody(resp)
 		resp.Body = io.NopCloser(bytes.NewReader(body))
+		if wrapperAdmissionWasRejected(account, resp.StatusCode, body) {
+			if err := input.Parsed.AutoWrapperManagedTurn.RestoreUndispatched(ctx); err != nil {
+				return nil, err
+			}
+			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: body, WrapperNotDispatched: true}
+		}
 		s.handleFailoverSideEffects(ctx, resp, account, input.RequestModel)
 		return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: body}
 	}

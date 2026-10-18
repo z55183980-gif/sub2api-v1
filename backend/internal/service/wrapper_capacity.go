@@ -9,6 +9,23 @@ import (
 	"time"
 )
 
+// Only registered wrappers can certify that admission failed before CLI input.
+// Ordinary 503s (including older wrappers) still quarantine uncertain sessions.
+func wrapperAdmissionWasRejected(account *Account, status int, body []byte) bool {
+	if account.GetExtraString("wrapper_protocol") != "anthropic-messages-cli-v1" || status != http.StatusServiceUnavailable {
+		return false
+	}
+	var response struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type              string `json:"type"`
+			RequestDispatched *bool  `json:"request_dispatched"`
+		} `json:"error"`
+	}
+	return json.Unmarshal(body, &response) == nil && response.Type == "error" &&
+		response.Error.Type == "wrapper_admission_rejected" && response.Error.RequestDispatched != nil && !*response.Error.RequestDispatched
+}
+
 // Waiting tools retain their CLI slot after HTTP ends; existing handoffs
 // bypass new-process admission because they already own their process.
 func (s *GatewayService) wrapperProcessUnavailable(ctx context.Context, account *Account, turn *WrapperManagedAutoTurn, token, proxyURL string) bool {
