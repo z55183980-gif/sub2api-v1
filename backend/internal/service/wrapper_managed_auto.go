@@ -133,6 +133,7 @@ type WrapperManagedAutoTurn struct {
 	recentShape        string
 	cleanupNative      func(context.Context, int64, string) error
 	preserveBranch     bool
+	priorReady         *wrapperManagedState
 }
 
 // PreserveBranch prevents a request resolved against a prior snapshot from
@@ -575,7 +576,13 @@ func (t *WrapperManagedAutoTurn) abandonNativeSession(ctx context.Context, reaso
 		err := t.cleanupNative(cleanupCtx, t.state.AccountID, id)
 		cancel()
 		if err != nil {
-			return fmt.Errorf("abandoned wrapper session cleanup failed: %w", err)
+			// Only a durably completed, idle generation can be left behind on an
+			// unreachable VM. New generations have unique IDs and a fenced lease.
+			// A busy response, pending tool, uncertain stream, or auth error is not safe.
+			if reason != "account_changed" || t.state.Phase != "ready" || len(t.state.PendingToolIDs) != 0 ||
+				t.state.Receipt == "" || !errors.Is(err, errWrapperCleanupUnavailable) {
+				return fmt.Errorf("abandoned wrapper session cleanup failed: %w", err)
+			}
 		}
 	}
 	t.skipReason = reason
@@ -643,6 +650,16 @@ func (t *WrapperManagedAutoTurn) ResetBridgeAttempt() {
 }
 
 func (t *WrapperManagedAutoTurn) IsReady() bool { return t.state.Phase == "ready" }
+
+// A local capacity rejection did not advance the CLI. Retain its receipt and
+// history rather than forcing the next request to rebuild a healthy session.
+func (t *WrapperManagedAutoTurn) RestoreUndispatched(ctx context.Context) error {
+	if t.priorReady != nil && t.priorReady.NativeSessionID == t.state.NativeSessionID && t.priorReady.AccountID == t.state.AccountID {
+		t.state = *t.priorReady
+		return t.save(ctx)
+	}
+	return nil
+}
 
 func normalizedWrapperManagedBody(body []byte, betaHeader string) ([]byte, error) {
 	body = StripEmptyTextBlocks(body)
@@ -907,6 +924,18 @@ func matchManagedHistoryProofs(request []json.RawMessage, saved []managedMessage
 // seeds the native session with validated history; later turns send only the
 // fresh user message.
 func (t *WrapperManagedAutoTurn) Prepare(ctx context.Context, accountID int64, body []byte, c *gin.Context) ([]byte, bool, error) {
+	t.priorReady = nil
+	if t.state.Phase == "ready" {
+		data, err := json.Marshal(t.state)
+		if err != nil {
+			return nil, false, err
+		}
+		var saved wrapperManagedState
+		if err := json.Unmarshal(data, &saved); err != nil {
+			return nil, false, err
+		}
+		t.priorReady = &saved
+	}
 	t.inputMessages = int(gjson.GetBytes(body, "messages.#").Int())
 	normalized, err := normalizedWrapperManagedBody(body, c.GetHeader("anthropic-beta"))
 	if err != nil {

@@ -35,7 +35,16 @@ func TestWrapperManagedHistoryLiveGateway(t *testing.T) {
 	svc := &GatewayService{cfg: cfg, httpUpstream: &wrapperProbeHTTPUpstream{}, rateLimitService: &RateLimitService{accountRepo: &autoManagedFailoverAccountRepo{}}}
 	account := newAnthropicAPIKeyAccountForTest()
 	account.ID = 6
-	account.Credentials["base_url"] = "http://127.0.0.1:24709"
+	upstream := os.Getenv("WRAPPER_HISTORY_UPSTREAM")
+	if upstream == "" {
+		upstream = "http://127.0.0.1:24709"
+	}
+	account.Credentials["base_url"] = upstream
+	credential := os.Getenv("WRAPPER_HISTORY_API_KEY")
+	if credential == "" {
+		credential = "upstream-anthropic-key"
+	}
+	account.Credentials["api_key"] = credential
 	account.Extra["wrapper_protocol"] = "anthropic-messages-cli-v1"
 	store := newWrapperManagedTestStore()
 	done := make(chan struct{})
@@ -103,7 +112,11 @@ func TestWrapperManagedHistoryLiveGateway(t *testing.T) {
 		w.WriteHeader(recorder.Code)
 		w.Write(recorder.Body.Bytes())
 	})
-	listener, err := net.Listen("tcp", "127.0.0.1:24711")
+	listen := os.Getenv("WRAPPER_HISTORY_LISTEN")
+	if listen == "" {
+		listen = "127.0.0.1:24711"
+	}
+	listener, err := net.Listen("tcp", listen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,8 +134,8 @@ func TestWrapperManagedHistoryLiveGateway(t *testing.T) {
 		var state wrapperManagedState
 		json.Unmarshal(raw, &state)
 		if state.NativeSessionID != "" {
-			req, _ := http.NewRequest("DELETE", "http://127.0.0.1:24709/v1/wrapper/sessions/"+state.NativeSessionID, nil)
-			req.Header.Set("Authorization", "Bearer upstream-anthropic-key")
+			req, _ := http.NewRequest("DELETE", upstream+"/v1/wrapper/sessions/"+state.NativeSessionID, nil)
+			req.Header.Set("Authorization", "Bearer "+credential)
 			res, e := http.DefaultClient.Do(req)
 			if e == nil {
 				res.Body.Close()

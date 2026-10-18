@@ -37,6 +37,7 @@ func (s *GatewayService) wrapperProcessUnavailable(ctx context.Context, account 
 	}
 	var h struct {
 		Draining  bool `json:"draining"`
+		Available *int `json:"availableProcesses"`
 		Processes struct {
 			Total int `json:"total"`
 			Limit int `json:"limit"`
@@ -45,5 +46,13 @@ func (s *GatewayService) wrapperProcessUnavailable(ctx context.Context, account 
 	if json.NewDecoder(io.LimitReader(resp.Body, 16<<10)).Decode(&h) != nil {
 		return false
 	}
-	return h.Draining || (h.Processes.Limit > 0 && h.Processes.Total >= h.Processes.Limit)
+	if h.Draining {
+		return true
+	}
+	// New wrappers account for reusable idle processes and tool-wait reserves.
+	// Preserve compatibility with older wrappers which do not expose capacity.
+	if h.Available != nil {
+		return *h.Available <= 0
+	}
+	return h.Processes.Limit > 0 && h.Processes.Total >= h.Processes.Limit
 }

@@ -313,3 +313,123 @@ func TestWrapperContinuationPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestWrapperGenerationFirstTokenReceiptValidation(t *testing.T) {
+	for _, value := range []string{`null`, `"9000"`, `-1`, `10001`, `1.5`, `true`} {
+		if got := wrapperGenerationFirstTokenMs([]byte(`{"wrapper_first_content_age_ms":`+value+`}`), 10000); got != nil {
+			t.Fatalf("accepted %s", value)
+		}
+	}
+	if wrapperGenerationFirstTokenMs([]byte(`{}`), 10000) != nil {
+		t.Fatal("old receipt changed timing")
+	}
+	for _, age := range []int{0, 9000, 10000} {
+		got := wrapperGenerationFirstTokenMs([]byte(fmt.Sprintf(`{"wrapper_first_content_age_ms":%d}`, age)), 10000)
+		if got == nil || *got != 10000-age {
+			t.Fatalf("age %d: %v", age, got)
+		}
+	}
+}
+
+func TestWrapperGenerationTimingOnlyChangesMetricAfterCommit(t *testing.T) {
+	var baseline string
+	canonicalSSE := func(raw string) string {
+		lines := strings.Split(raw, "\n")
+		for i, line := range lines {
+			if strings.HasPrefix(line, "data: ") {
+				var value any
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &value); err != nil {
+					t.Fatal(err)
+				}
+				encoded, err := json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				lines[i] = "data: " + string(encoded)
+			}
+		}
+		return strings.Join(lines, "\n")
+	}
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	for _, scenario := range []struct{ withTiming, optIn bool }{{false, false}, {true, false}, {true, true}, {false, true}} {
+		withTiming := scenario.withTiming
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest("POST", "/v1/messages", nil)
+		if scenario.optIn {
+			c.Request.Header.Set("X-Gateway-Timing", "generation-v1")
+		}
+		turn, err := beginWrapperManagedAutoTurn(ctx, newWrapperManagedTestStore(), "generation-timing")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := []byte(`{"model":"claude-opus-5-5","stream":true,"max_tokens":2000,"messages":[{"role":"user","content":"hello"}]}`)
+		_, active, err := turn.Prepare(ctx, 1, body, c)
+		if err != nil || !active {
+			t.Fatalf("prepare: %v %v", active, err)
+		}
+		events := append([]string{quotaStart}, quotaText(0, "retained text")...)
+		events = append(events, quotaEnd("end_turn")...)
+		if withTiming {
+			events[len(events)-1] = `{"type":"message_stop","wrapper_turn_id":"receipt-new","wrapper_first_content_age_ms":9000}`
+		}
+		response := &http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader(quotaSSE(events...)))}
+		result, err := (&GatewayService{}).streamWrapperWithRecovery(ctx, response, c, newAnthropicAPIKeyAccountForTest(), time.Now().Add(-10*time.Second), turn, &WrapperStreamRecovery{})
+		turn.Release()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.firstTokenMs == nil {
+			t.Fatal("missing timing")
+		}
+		minimum := 10000
+		if withTiming {
+			minimum = 1000
+		}
+		if *result.firstTokenMs < minimum || *result.firstTokenMs > minimum+1000 {
+			t.Fatalf("unexpected timing %d", *result.firstTokenMs)
+		}
+		if strings.Contains(recorder.Body.String(), "wrapper_first_content_age_ms") {
+			t.Fatal("internal timing leaked downstream")
+		}
+		downstream := recorder.Body.String()
+		if scenario.optIn && withTiming {
+			lines := strings.Split(downstream, "\n")
+			found := false
+			for i, line := range lines {
+				if strings.HasPrefix(line, "data: ") && gjson.Get(line[6:], "type").String() == "message_stop" {
+					metadata := gjson.Get(line[6:], "gateway_timing")
+					if metadata.Get("version").Int() != 1 || metadata.Get("first_content_age_ms").Int() < 9000 {
+						t.Fatalf("invalid opt-in telemetry: %s", line)
+					}
+					var value map[string]any
+					if err := json.Unmarshal([]byte(line[6:]), &value); err != nil {
+						t.Fatal(err)
+					}
+					delete(value, "gateway_timing")
+					encoded, err := json.Marshal(value)
+					if err != nil {
+						t.Fatal(err)
+					}
+					lines[i] = "data: " + string(encoded)
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("missing opt-in timing receipt")
+			}
+			downstream = strings.Join(lines, "\n")
+		} else if strings.Contains(downstream, "gateway_timing") {
+			t.Fatal("unexpected opt-in telemetry")
+		}
+		if baseline == "" {
+			baseline = canonicalSSE(downstream)
+		} else if canonicalSSE(downstream) != baseline {
+			t.Fatalf("timing metadata changed downstream response bytes:\nold=%s\nnew=%s", baseline, recorder.Body.String())
+		}
+		if !strings.Contains(recorder.Body.String(), "retained text") || strings.Count(recorder.Body.String(), "event: message_stop") != 1 {
+			t.Fatal("response changed")
+		}
+	}
+}

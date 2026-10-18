@@ -703,6 +703,7 @@ type GatewayFailureReason string
 // trigger account failover. Additive metadata keeps existing composite literals
 // source-compatible and preserves their legacy retry-next-account behavior.
 type UpstreamFailoverError struct {
+	WrapperNotDispatched     bool // Local preflight rejected before an inference request existed.
 	StatusCode               int
 	ResponseBody             []byte        // 上游响应体，用于错误透传规则匹配
 	ResponseHeaders          http.Header   // 上游响应头，用于透传 cf-ray/cf-mitigated/content-type 等诊断信息
@@ -788,6 +789,7 @@ type GatewayService struct {
 	userGroupRateRepo     UserGroupRateRepository
 	cache                 GatewayCache
 	digestStore           *DigestSessionStore
+	statelessAffinity     statelessAffinityStore
 	cfg                   *config.Config
 	schedulerSnapshot     *SchedulerSnapshotService
 	billingService        *BillingService

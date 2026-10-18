@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -348,6 +349,7 @@ func (s *GatewayService) streamWrapperWithRecovery(ctx context.Context, resp *ht
 			if !gjson.ValidBytes(f.data) {
 				return result, errors.New("invalid wrapper SSE JSON")
 			}
+			terminalElapsedMs := time.Since(start).Milliseconds()
 			data := reverseToolNamesIfPresent(c, f.data)
 			observer.ObserveAnthropic(data)
 			typ := gjson.GetBytes(data, "type").String()
@@ -402,6 +404,12 @@ func (s *GatewayService) streamWrapperWithRecovery(ctx context.Context, resp *ht
 					}
 				}
 				return result, &WrapperStreamLimitError{Body: append([]byte(nil), data...)}
+			}
+			var generationFirstMs *int
+			if typ == "message_stop" {
+				generationFirstMs = wrapperGenerationFirstTokenMs(data, terminalElapsedMs)
+				// Internal timing is never part of the downstream Anthropic protocol.
+				data, _ = sjson.DeleteBytes(data, "wrapper_first_content_age_ms")
 			}
 			if turn != nil {
 				turn.Observe(data)
@@ -500,6 +508,9 @@ func (s *GatewayService) streamWrapperWithRecovery(ctx context.Context, resp *ht
 					return result, err
 				}
 				r.committed = turn
+				if generationFirstMs != nil {
+					result.firstTokenMs = generationFirstMs
+				}
 				for _, b := range pending {
 					if err := write(b); err != nil {
 						return result, err
@@ -512,6 +523,15 @@ func (s *GatewayService) streamWrapperWithRecovery(ctx context.Context, resp *ht
 				}
 				if err := write(terminalDelta); err != nil {
 					return result, err
+				}
+				// Opt-in gateway telemetry is attached only after a valid committed turn.
+				// Rebase the age at publication so downstream hops include this hop's
+				// commit/buffer time without requiring synchronized host clocks.
+				if generationFirstMs != nil && c.GetHeader("X-Gateway-Timing") == "generation-v1" {
+					age := time.Since(start).Milliseconds() - int64(*generationFirstMs)
+					if age >= 0 {
+						data, _ = sjson.SetBytes(data, "gateway_timing", map[string]any{"version": 1, "first_content_age_ms": age})
+					}
 				}
 				if err := write(data); err != nil {
 					return result, err
@@ -543,4 +563,21 @@ func (s *GatewayService) streamWrapperWithRecovery(ctx context.Context, resp *ht
 			}
 		}
 	}
+}
+
+// The Wrapper reports the monotonic age of the first retained content at receipt
+// creation. Subtract it from this hop's elapsed time: no host clock sync needed,
+// and request preparation/recovery time remains included. Invalid/old receipts
+// retain the existing content-arrival measurement; timing never fails a request.
+func wrapperGenerationFirstTokenMs(data []byte, elapsedMs int64) *int {
+	value := gjson.GetBytes(data, "wrapper_first_content_age_ms")
+	if value.Type != gjson.Number {
+		return nil
+	}
+	age := value.Float()
+	if math.IsNaN(age) || math.IsInf(age, 0) || age < 0 || math.Trunc(age) != age || age > float64(elapsedMs) {
+		return nil
+	}
+	ms := int(elapsedMs - int64(age))
+	return &ms
 }

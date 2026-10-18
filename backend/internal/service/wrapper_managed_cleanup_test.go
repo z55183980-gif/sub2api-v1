@@ -101,3 +101,54 @@ func TestWrapperManagedAbandonDeletesOldGenerationBeforeReset(t *testing.T) {
 	require.NoError(t, turn.abandonNativeSession(ctx, "empty_history"))
 	require.Equal(t, 2, calls)
 }
+
+func TestWrapperCompletedMigrationDoesNotDependOnUnreachableOldVM(t *testing.T) {
+	for _, tc := range []struct {
+		name, phase, reason string
+		pending             bool
+		cleanup             error
+		allowed             bool
+	}{
+		{"idle migration", "ready", "account_changed", false, errWrapperCleanupUnavailable, true},
+		{"busy is not unreachable", "ready", "account_changed", false, errWrapperCleanupBusy, false},
+		{"auth failure", "ready", "account_changed", false, errors.New("HTTP 401"), false},
+		{"pending tools", "ready", "account_changed", true, errWrapperCleanupUnavailable, false},
+		{"uncertain turn", "quarantined", "account_changed", false, errWrapperCleanupUnavailable, false},
+		{"same VM history change", "ready", "history_changed", false, errWrapperCleanupUnavailable, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			turn, err := beginWrapperManagedAutoTurn(context.Background(), newWrapperManagedTestStore(), WrapperManagedAutoKey(1, tc.name))
+			require.NoError(t, err)
+			defer turn.Release()
+			turn.state = wrapperManagedState{AccountID: 8, NativeSessionID: "sub2api-old-generation", Phase: tc.phase, Receipt: "completed"}
+			if tc.pending {
+				turn.state.PendingToolIDs = []string{"tool"}
+			}
+			turn.cleanupNative = func(context.Context, int64, string) error { return tc.cleanup }
+			err = turn.abandonNativeSession(context.Background(), tc.reason)
+			if tc.allowed {
+				require.NoError(t, err)
+				require.Empty(t, turn.state.NativeSessionID)
+			} else {
+				require.Error(t, err)
+				require.Equal(t, "sub2api-old-generation", turn.state.NativeSessionID)
+			}
+		})
+	}
+}
+
+func TestWrapperUndispatchedRestoresOnlySameGeneration(t *testing.T) {
+	turn, err := beginWrapperManagedAutoTurn(context.Background(), newWrapperManagedTestStore(), WrapperManagedAutoKey(1, "undispatched"))
+	require.NoError(t, err)
+	defer turn.Release()
+	previous := wrapperManagedState{AccountID: 8, NativeSessionID: "old", Phase: "ready", Receipt: "receipt"}
+	turn.priorReady = &previous
+	turn.state = previous
+	turn.state.Phase = "pending"
+	require.NoError(t, turn.RestoreUndispatched(context.Background()))
+	require.Equal(t, previous, turn.state)
+	turn.state = wrapperManagedState{AccountID: 7, NativeSessionID: "replacement", Phase: "pending"}
+	require.NoError(t, turn.RestoreUndispatched(context.Background()))
+	require.Equal(t, "replacement", turn.state.NativeSessionID)
+	require.Equal(t, "pending", turn.state.Phase)
+}

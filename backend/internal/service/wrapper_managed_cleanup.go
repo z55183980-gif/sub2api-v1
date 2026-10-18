@@ -11,6 +11,7 @@ import (
 )
 
 var errWrapperCleanupBusy = errors.New("previous wrapper session is still active")
+var errWrapperCleanupUnavailable = errors.New("previous wrapper cleanup transport unavailable")
 
 // Only server-generated session IDs on registered Wrapper accounts may be deleted.
 // Use the same account credential, routing and transport as inference requests.
@@ -48,7 +49,7 @@ func (s *GatewayService) deleteAbandonedWrapperSession(ctx context.Context, acco
 	}
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
-		return fmt.Errorf("delete previous wrapper session: %w", err)
+		return fmt.Errorf("%w: %w", errWrapperCleanupUnavailable, err)
 	}
 	if resp == nil {
 		return fmt.Errorf("empty wrapper cleanup response")

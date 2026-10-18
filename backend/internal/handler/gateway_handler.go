@@ -424,6 +424,17 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		platform = apiKey.Group.Platform
 	}
 	sessionKey := sessionHash
+	var statelessAffinity *service.WrapperStatelessAffinity
+	// This is routing only; managed sessions and auxiliary request isolation
+	// retain their own identities. All clients use the same history proof.
+	if os.Getenv("SUB2API_WRAPPER_STATELESS_AFFINITY") == "1" && platform == service.PlatformAnthropic && !managedWrapperSession && autoManagedConversationID == "" &&
+		parsedReq.MetadataUserID == "" && titleRoutingID == "" && summaryRoutingID == "" && classifierRoutingID == "" {
+		statelessAffinity = h.gatewayService.ResolveWrapperStatelessAffinity(apiKey.ID, apiKey.GroupID, body)
+		if statelessAffinity != nil {
+			sessionKey = statelessAffinity.Key
+			reqLog.Info("wrapper.stateless_affinity", zap.Any("affinity", statelessAffinity))
+		}
+	}
 	if platform == service.PlatformGemini && sessionHash != "" {
 		sessionKey = "gemini:" + sessionHash
 	}
@@ -432,6 +443,14 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	var sessionBoundAccountID int64
 	if sessionKey != "" {
 		sessionBoundAccountID, _ = h.gatewayService.GetCachedSessionAccountID(c.Request.Context(), apiKey.GroupID, sessionKey)
+		if statelessAffinity != nil && statelessAffinity.AccountID > 0 {
+			sessionBoundAccountID = statelessAffinity.AccountID
+			// Legacy schedulers read Redis directly; load-aware schedulers use
+			// the prefetched context below. Both still validate availability.
+			if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionKey, sessionBoundAccountID); err != nil {
+				reqLog.Warn("wrapper.stateless_affinity_bind_failed", zap.Error(err))
+			}
+		}
 		// [DEBUG-STICKY] 打印粘性会话查询结果
 		reqLog.Info("sticky.cache_lookup",
 			zap.String("session_key", sessionKey),
@@ -1238,6 +1257,13 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			// 提交 usage 记录。成功路径与"流中断但 Forward 已观测到 usage 的部分结果"
 			// 错误路径共用：后者若不入账，上游已计量的请求会完全漏记漏计费（#5148）。
 			submitForwardUsage := func(result *service.ForwardResult) {
+				if statelessAffinity != nil && account.GetExtraString("wrapper_protocol") == "anthropic-messages-cli-v1" &&
+					(result.Usage.InputTokens+result.Usage.OutputTokens+result.Usage.CacheReadInputTokens+result.Usage.CacheCreationInputTokens > 0) &&
+					((currentAPIKey.GroupID == nil && apiKey.GroupID == nil) || (currentAPIKey.GroupID != nil && apiKey.GroupID != nil && *currentAPIKey.GroupID == *apiKey.GroupID)) {
+					h.gatewayService.RememberWrapperStatelessAffinity(statelessAffinity, account.ID)
+					reqLog.Info("wrapper.stateless_affinity_recorded", zap.String("key", statelessAffinity.Key), zap.Int64("account_id", account.ID),
+						zap.Int64("preferred_account_id", statelessAffinity.AccountID), zap.Bool("account_changed", statelessAffinity.AccountID > 0 && statelessAffinity.AccountID != account.ID))
+				}
 				// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
 				userAgent := c.GetHeader("User-Agent")
 				clientIP := ip.GetClientIP(c)
@@ -1419,7 +1445,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						return
 					}
 					if attemptParsedReq.AutoWrapperManagedTurn != nil {
-						attemptParsedReq.AutoWrapperManagedTurn.Quarantine()
+						if !failoverErr.WrapperNotDispatched {
+							attemptParsedReq.AutoWrapperManagedTurn.Quarantine()
+						}
 						attemptParsedReq.AutoWrapperManagedTurn.Release()
 						autoManagedTurn = nil
 					}

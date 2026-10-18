@@ -106,7 +106,10 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	var resp *http.Response
 	if account.GetExtraString("wrapper_protocol") == "anthropic-messages-cli-v1" && input.Parsed != nil &&
 		s.wrapperProcessUnavailable(ctx, account, input.Parsed.AutoWrapperManagedTurn, token, proxyURL) {
-		return nil, &UpstreamFailoverError{StatusCode: http.StatusServiceUnavailable, ResponseBody: []byte(`{"type":"error","error":{"type":"overloaded_error","message":"Wrapper has no available CLI process slot"}}`)}
+		if err := input.Parsed.AutoWrapperManagedTurn.RestoreUndispatched(ctx); err != nil {
+			return nil, err
+		}
+		return nil, &UpstreamFailoverError{WrapperNotDispatched: true, StatusCode: http.StatusServiceUnavailable, ResponseBody: []byte(`{"type":"error","error":{"type":"overloaded_error","message":"Wrapper has no available CLI process slot"}}`)}
 	}
 	retryStart := time.Now()
 	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {

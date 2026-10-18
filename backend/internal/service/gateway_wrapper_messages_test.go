@@ -4,9 +4,11 @@ package service
 
 import (
 	"context"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -30,11 +32,12 @@ func TestWrapperMessageNormalizationIsAccountScoped(t *testing.T) {
 	body := []byte(`{"model":"claude-opus-5-5","max_tokens":100,"messages":[{"role":"system","content":[]},{"role":"user","content":"hi"}]}`)
 	wrapper := newAnthropicAPIKeyAccountForTest()
 	wrapper.Extra["wrapper_protocol"] = "anthropic-messages-cli-v1"
-	_, wrapperBody, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), nil, wrapper, body, "upstream-key")
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	_, wrapperBody, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, wrapper, body, "upstream-key")
 	require.NoError(t, err)
 	require.Len(t, gjson.GetBytes(wrapperBody, "messages").Array(), 1)
 	ordinary := newAnthropicAPIKeyAccountForTest()
-	_, ordinaryBody, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), nil, ordinary, body, "upstream-key")
+	_, ordinaryBody, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, ordinary, body, "upstream-key")
 	require.NoError(t, err)
 	require.Len(t, gjson.GetBytes(ordinaryBody, "messages").Array(), 2)
 }
