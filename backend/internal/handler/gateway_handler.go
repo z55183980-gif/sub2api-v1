@@ -41,11 +41,22 @@ func autoWrapperConversationID(c *gin.Context, keyID int64, streaming, explicitM
 	if explicitManaged || (!streaming && os.Getenv("SUB2API_WRAPPER_NONSTREAM_DISABLED") == "1") || !service.AutoWrapperManagedEnabledForKey(keyID) || c.GetHeader("X-Wrapper-Session-Mode") != "" {
 		return ""
 	}
+	// Auxiliary requests must not acquire or advance the main conversation.
+	if kind := c.GetHeader("X-Claude-Code-Request-Class"); kind != "" && kind != "main" && kind != "subagent" {
+		return ""
+	}
+	if c.GetHeader("X-Claude-Code-Request-Class") == "subagent" && c.GetHeader("X-Claude-Code-Agent-Id") == "" {
+		return ""
+	}
 	uid := service.ParseMetadataUserID(metadataUserID)
 	if uid == nil || uid.SessionID == "" {
 		return ""
 	}
-	return service.WrapperManagedConversationID(uid.SessionID, c.GetHeader("X-Claude-Code-Agent-Id"))
+	id := service.WrapperManagedConversationID(uid.SessionID, c.GetHeader("X-Claude-Code-Agent-Id"))
+	if scope := service.WrapperClientScope(c.GetHeader("X-Wrapper-Client-Scope")); scope != "" {
+		id = "scoped-" + service.HashUsageRequestPayload([]byte(scope+"\x00"+id))
+	}
+	return id
 }
 
 func managedWrapperSessionID(c *gin.Context) (string, bool, error) {
@@ -274,6 +285,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	if h.errorPassthroughService != nil {
 		service.BindErrorPassthroughService(c, h.errorPassthroughService)
 	}
+
+	c.Set("wrapper_execution_key_id", apiKey.ID)
 
 	// 获取订阅信息（可能为nil）- 提前获取用于后续检查
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)

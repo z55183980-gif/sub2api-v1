@@ -190,6 +190,8 @@ func RegisterGatewayRoutes(
 	gateway.Use(endpointNorm)
 	gateway.Use(gin.HandlerFunc(apiKeyAuth))
 	gateway.GET("/sub2api/billing", h.Gateway.KeyBillingInfo)
+	gateway.GET("/wrapper/executions/:execution_id", h.Gateway.WrapperExecutionControl)
+	gateway.POST("/wrapper/executions/:execution_id/control", h.Gateway.WrapperExecutionControl)
 	gateway.Use(groupModelAllowlist)
 	gateway.Use(compositeTarget)
 	gateway.Use(requireGroupAnthropic)

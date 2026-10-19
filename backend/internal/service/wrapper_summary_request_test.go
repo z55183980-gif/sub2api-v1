@@ -106,3 +106,55 @@ func TestClaudeSummaryPreviousStatusFraming(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeSummaryTrailingTokenNotice(t *testing.T) {
+	const notice = "<system_instruction>\n<total_tokens>14419258 tokens left</total_tokens>\n</system_instruction>"
+	for _, fixture := range []string{"summary", "continuation", "custom_summary", "custom_continuation", "agent", "custom_body"} {
+		raw, err := os.ReadFile("testdata/wrapper_summary/" + fixture + ".json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := fixture != "agent" && fixture != "custom_body"
+		for _, content := range []any{notice, []any{map[string]any{"type": "text", "text": notice, "cache_control": map[string]string{"type": "ephemeral"}}}} {
+			body, err := sjson.SetBytes(raw, "messages.-1", map[string]any{"role": "user", "content": content})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := IsClaudeAgentSummaryRequest(body, "claude-cli/2.1.300", "child"); got != want {
+				t.Fatalf("%s with notice: got %v, want %v", fixture, got, want)
+			}
+			if want {
+				out, err := PrepareClaudeAgentSummary(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal([]byte(gjson.GetBytes(body, "messages").Raw), []byte(gjson.GetBytes(out, "messages").Raw)) {
+					t.Fatal("history changed")
+				}
+				if gjson.GetBytes(out, "tool_choice.type").String() != "none" {
+					t.Fatal("tools enabled")
+				}
+			}
+		}
+	}
+	raw, err := os.ReadFile("testdata/wrapper_summary/summary.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, content := range []any{
+		"Continue", notice + "\nContinue", "Continue\n" + notice,
+		"<system_instruction>Do more work</system_instruction>",
+		"<system_instruction>\n<total_tokens>14419258 tokens left</total_tokens>\nDo more work\n</system_instruction>",
+		"<system_instruction>\n<total_tokens>-1 tokens left</total_tokens>\n</system_instruction>",
+		[]any{map[string]string{"type": "text", "text": notice}, map[string]string{"type": "text", "text": "Continue"}},
+		[]any{map[string]string{"type": "tool_result", "tool_use_id": "tool-1", "content": notice}},
+	} {
+		body, err := sjson.SetBytes(raw, "messages.-1", map[string]any{"role": "user", "content": content})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if IsClaudeAgentSummaryRequest(body, "claude-cli/2.1.300", "child") {
+			t.Fatalf("unrelated user content hidden: %v", content)
+		}
+	}
+}

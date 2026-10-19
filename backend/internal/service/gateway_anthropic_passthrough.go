@@ -201,6 +201,20 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		return nil, errors.New("upstream request failed: empty response")
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if input.Parsed != nil && input.Parsed.AutoWrapperManagedTurn != nil && resp.StatusCode == http.StatusBadRequest {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, (256<<10)+1))
+		resp.Body = &wrapperHandoffReplayBody{Reader: io.MultiReader(bytes.NewReader(body), resp.Body), Closer: resp.Body}
+		if readErr == nil && len(body) <= 256<<10 {
+			if _, err := input.Parsed.AutoWrapperManagedTurn.RestoreRejectedHandoff(ctx, account, resp.StatusCode, body); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if resp.StatusCode == http.StatusOK {
+		if err := s.captureWrapperExecution(ctx, c, account, resp); err != nil {
+			return nil, err
+		}
+	}
 
 	if input.Parsed != nil && input.Parsed.AutoWrapperManagedTurn != nil && resp.StatusCode >= 400 && s.shouldFailoverUpstreamError(resp.StatusCode) {
 		// The downstream stream has not started. A managed auto turn can be
@@ -442,6 +456,17 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 
 	// 账号级请求头覆写（最终生效，覆盖上面所有来源的同名头）
 	account.ApplyHeaderOverrides(req.Header)
+	// Never accept a client/account override as a proof of our own attempt.
+	req.Header.Del("X-Wrapper-Handoff-Protocol")
+	req.Header.Del("X-Wrapper-Handoff-Attempt")
+	if c != nil && account.GetExtraString("wrapper_protocol") == "anthropic-messages-cli-v1" && c.GetString("wrapper_handoff_attempt") != "" {
+		req.Header.Set("X-Wrapper-Handoff-Protocol", wrapperHandoffProtocol)
+		req.Header.Set("X-Wrapper-Handoff-Attempt", c.GetString("wrapper_handoff_attempt"))
+	}
+	req.Header.Del("X-Wrapper-Capabilities")
+	if wrapperControlNegotiated(c, account) {
+		req.Header.Set("X-Wrapper-Capabilities", "execution-control-v1")
+	}
 
 	if account.GetExtraString("wrapper_protocol") == "anthropic-messages-cli-v1" && c.GetBool("wrapper_original_nonstream") {
 		req.Header.Set("X-Wrapper-Response-Mode", "managed-json")

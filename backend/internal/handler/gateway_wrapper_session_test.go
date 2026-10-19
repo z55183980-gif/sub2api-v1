@@ -9,6 +9,24 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func TestAutoWrapperRequestClassesDoNotShareMainHistory(t *testing.T) {
+	t.Setenv(service.AutoWrapperManagedEnv, "1")
+	t.Setenv(service.AutoWrapperManagedKeyIDsEnv, "1")
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/messages", nil)
+	metadata := `{"device_id":"test-device","session_id":"parent"}`
+	for _, kind := range []string{"auxiliary", "compaction", "workflow", "unknown", "subagent"} {
+		c.Request.Header.Set("X-Claude-Code-Request-Class", kind)
+		if id := autoWrapperConversationID(c, 1, true, false, metadata); id != "" {
+			t.Fatalf("%s inherited %s", kind, id)
+		}
+	}
+	c.Request.Header.Set("X-Claude-Code-Request-Class", "main")
+	if autoWrapperConversationID(c, 1, true, false, metadata) != "parent" {
+		t.Fatal("main lost routing")
+	}
+}
+
 func TestAutoWrapperConversationIDFromRealCLIHeaders(t *testing.T) {
 	t.Setenv(service.AutoWrapperManagedEnv, "1")
 	t.Setenv(service.AutoWrapperManagedKeyIDsEnv, "1")

@@ -1,9 +1,11 @@
 package service
 
 import (
+	"regexp"
+	"strings"
+
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
-	"strings"
 )
 
 // This exact instruction and its position are from Claude Code 2.1.300's
@@ -36,7 +38,7 @@ func IsClaudeAgentSummaryRequest(body []byte, userAgent, agentID string) bool {
 	}
 	messages := root.Get("messages").Array()
 	i := len(messages) - 1
-	for i >= 0 && messages[i].Get("role").String() == "system" {
+	for i >= 0 && (messages[i].Get("role").String() == "system" || isClaudeSummaryTokenNotice(messages[i])) {
 		i--
 	}
 	if i < 1 || messages[i].Get("role").String() != "user" {
@@ -72,6 +74,26 @@ func IsClaudeAgentSummaryRequest(body []byte, userAgent, agentID string) bool {
 		delete(calls, id)
 	}
 	return len(calls) == 0
+}
+
+var claudeSummaryTokenNotice = regexp.MustCompile(`^<system_instruction>\s*<total_tokens>[0-9]+ tokens left</total_tokens>\s*</system_instruction>$`)
+
+// The client can append its token counter as a separate user message after
+// the summary fork. Skip only that exact envelope, never arbitrary user text
+// or tool results, and leave the original request history unchanged.
+func isClaudeSummaryTokenNotice(message gjson.Result) bool {
+	if message.Get("role").String() != "user" {
+		return false
+	}
+	content := message.Get("content")
+	if content.IsArray() {
+		blocks := content.Array()
+		if len(blocks) != 1 || blocks[0].Get("type").String() != "text" {
+			return false
+		}
+		content = blocks[0].Get("text")
+	}
+	return content.Type == gjson.String && claudeSummaryTokenNotice.MatchString(strings.TrimSpace(content.String()))
 }
 
 // Custom CLI agents replace the built-in agent prompt. Recognize the observed

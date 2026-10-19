@@ -224,6 +224,9 @@ export default {
       subscriptionExpires: '到期',
       // 容量状态提示
       capacity: {
+        httpRequests: '网关正在执行的 HTTP 请求数；工具等待和保留进程另行统计',
+        generating: '生成', waitingTools: '等工具', idleRetained: '空闲保留', queued: '排队',
+        totalProcesses: '进程总数', available: '可接新请求', unknown: '进程状态未知或已过期', updated: '更新于 {time}',
         windowCost: {
           blocked: '5h窗口费用超限，账号暂停调度',
           stickyOnly: '5h窗口费用达阈值，仅允许粘性会话',

@@ -790,6 +790,7 @@ type GatewayService struct {
 	cache                 GatewayCache
 	digestStore           *DigestSessionStore
 	statelessAffinity     statelessAffinityStore
+	wrapperCapacity       wrapperCapacityCache
 	cfg                   *config.Config
 	schedulerSnapshot     *SchedulerSnapshotService
 	billingService        *BillingService

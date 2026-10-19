@@ -135,6 +135,7 @@ type WrapperManagedAutoTurn struct {
 	cleanupNative      func(context.Context, int64, string) error
 	preserveBranch     bool
 	priorReady         *wrapperManagedState
+	handoffAttempt     string
 }
 
 // PreserveBranch prevents a request resolved against a prior snapshot from
@@ -935,6 +936,35 @@ func matchManagedHistoryProofs(request []json.RawMessage, saved []managedMessage
 // seeds the native session with validated history; later turns send only the
 // fresh user message.
 func (t *WrapperManagedAutoTurn) Prepare(ctx context.Context, accountID int64, body []byte, c *gin.Context) ([]byte, bool, error) {
+	if promptID := c.GetHeader("X-Claude-Code-Prompt-Id"); promptID != "" {
+		cancelled, err := t.store.GetWrapperManagedState(ctx, wrapperCancelledPromptKey(t.key, promptID))
+		if err != nil {
+			return nil, false, err
+		}
+		if len(cancelled) > 0 {
+			return nil, true, &WrapperManagedPayloadError{Status: 409, Reason: "execution was explicitly cancelled; submit a new prompt"}
+		}
+	}
+	cancelledGeneration := false
+	if t.state.NativeSessionID != "" {
+		cancelled, err := t.store.GetWrapperManagedState(ctx, wrapperCancelledGenerationKey(t.key, t.state.NativeSessionID))
+		if err != nil {
+			return nil, false, err
+		}
+		if len(cancelled) > 0 {
+			var marker struct {
+				PromptID string `json:"prompt_id"`
+			}
+			if json.Unmarshal(cancelled, &marker) != nil {
+				return nil, false, errors.New("invalid cancelled generation marker")
+			}
+			if marker.PromptID != "" && marker.PromptID == c.GetHeader("X-Claude-Code-Prompt-Id") {
+				return nil, true, &WrapperManagedPayloadError{Status: 409, Reason: "execution was explicitly cancelled; submit a new prompt"}
+			}
+			cancelledGeneration = marker.PromptID != "" && c.GetHeader("X-Claude-Code-Prompt-Id") != "" && c.GetHeader("X-Claude-Code-Request-Class") == "main"
+			t.state.Phase = "quarantined"
+		}
+	}
 	t.priorReady = nil
 	if t.state.Phase == "ready" {
 		data, err := json.Marshal(t.state)
@@ -1011,7 +1041,7 @@ func (t *WrapperManagedAutoTurn) Prepare(ctx context.Context, accountID int64, b
 		}
 	}
 	if resyncReason != "" {
-		if t.preserveBranch {
+		if t.preserveBranch && !cancelledGeneration {
 			return nil, false, &WrapperManagedPayloadError{Status: 409, Reason: "managed branch advanced or changed; refusing to replace its history"}
 		}
 		// Never resume a native transcript whose client-visible history is
@@ -1032,7 +1062,7 @@ func (t *WrapperManagedAutoTurn) Prepare(ctx context.Context, accountID int64, b
 		return body, false, nil
 	}
 	var recoveredHistory []json.RawMessage
-	if t.preserveBranch && t.state.Phase == "" {
+	if (t.preserveBranch || cancelledGeneration) && t.state.Phase == "" {
 		if history, ok := managedBranchRecoveryHistory(request.Messages); ok {
 			recoveredHistory = history
 			t.skipReason = "branch_complete_tool_history_recovered"
@@ -1167,6 +1197,13 @@ func (t *WrapperManagedAutoTurn) Prepare(ctx context.Context, accountID int64, b
 		return nil, true, err
 	}
 	c.Request.Header.Set("X-Wrapper-Session-Mode", "managed")
+	var attempt [16]byte
+	if _, err := rand.Read(attempt[:]); err != nil {
+		return nil, true, err
+	}
+	t.handoffAttempt = hex.EncodeToString(attempt[:])
+	c.Set("wrapper_handoff_attempt", t.handoffAttempt)
+	c.Set("wrapper_managed_state_key", t.key)
 	c.Request.Header.Set("X-Wrapper-Auto-Managed", "1")
 	c.Request.Header.Set("X-Wrapper-Session-Id", t.state.NativeSessionID)
 	c.Request.Header.Set("X-Claude-Code-Session-Id", t.state.NativeSessionID)

@@ -1243,6 +1243,19 @@ export interface Account {
   concurrency: number
   load_factor?: number | null
   current_concurrency?: number // Real-time concurrency count from Redis
+  concurrency_observed_at?: string | null
+  wrapper_capacity?: {
+    observed_at: string
+    valid: boolean
+    generating: number | null
+    waiting_tools: number | null
+    idle_retained: number | null
+    queued: number | null
+    total_processes: number | null
+    limit: number | null
+    available: number | null
+    draining: boolean
+  }
   scheduler_score?: {
     base_score: number
     sticky_score?: number

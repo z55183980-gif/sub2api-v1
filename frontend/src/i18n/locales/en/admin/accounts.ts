@@ -373,6 +373,9 @@ export default {
       subscriptionExpires: 'Expires',
       // Capacity status tooltips
       capacity: {
+        httpRequests: 'Active gateway HTTP requests; tool waits and retained processes are counted separately',
+        generating: 'Generating', waitingTools: 'Waiting tools', idleRetained: 'Idle retained', queued: 'Queued',
+        totalProcesses: 'Total processes', available: 'Available', unknown: 'Process state unavailable or stale', updated: 'Updated {time}',
         windowCost: {
           blocked: '5h window cost exceeded, account scheduling paused',
           stickyOnly: '5h window cost at threshold, only sticky sessions allowed',
