@@ -1865,7 +1865,7 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_Non2xxRecordsOllamaActivity(t
 
 func TestOpus55RejectsUnsupportedParametersBeforeMimicry(t *testing.T) {
 	for _, typ := range []string{AccountTypeOAuth, AccountTypeAPIKey} {
-		for _, field := range []string{`"thinking":{"type":"disabled"}`, `"thinking":{"type":"enabled","budget_tokens":1024}`, `"tool_choice":{"type":"any"}`, `"tool_choice":{"type":"tool","name":"lookup"}`} {
+		for _, field := range []string{`"tool_choice":{"type":"any"}`, `"tool_choice":{"type":"tool","name":"lookup"}`} {
 			for _, count := range []bool{false, true} {
 				rec := httptest.NewRecorder()
 				c, _ := gin.CreateTestContext(rec)

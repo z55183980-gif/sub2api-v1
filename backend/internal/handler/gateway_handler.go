@@ -349,7 +349,58 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 	titleRoutingID := isolateWrapperTitle(c, apiKey.ID, body, parsedReq.MetadataUserID)
 	classifierRoutingID := isolateWrapperClassifier(c, apiKey.ID, body, parsedReq.MetadataUserID)
+	// Internal fork authority is derived from this API key's saved parent only.
+	c.Request.Header.Del("X-Wrapper-Fork-Parent")
+	c.Request.Header.Del("X-Wrapper-Fork-Turn-Id")
+	recapRoutingID := isolateWrapperRecap(c, apiKey.ID, body, parsedReq.MetadataUserID)
+	var recapForkAccountID int64
+	if recapRoutingID != "" && os.Getenv("SUB2API_WRAPPER_NATIVE_FORK_ACCOUNT_IDS") != "" {
+		parentID := recapParentConversation(c, parsedReq.MetadataUserID)
+		// Desktop branch resolution needs its own snapshot protocol; do not guess.
+		if !strings.Contains(c.GetHeader("User-Agent"), "claude-desktop-3p") && parentID != "" {
+			parent, _, forkErr := h.gatewayService.BeginWrapperManagedAutoTurn(c.Request.Context(), service.WrapperManagedAutoKey(apiKey.ID, parentID))
+			if forkErr != nil {
+				h.handleWrapperManagedBeginError(c, forkErr, streamStarted)
+				return
+			}
+			if nativeForkAccountEnabled(parent.AccountID()) {
+				updated, active, prepareErr := parent.PrepareNativeFork(body, c)
+				if prepareErr != nil {
+					parent.Release()
+					h.handleWrapperManagedBeginError(c, prepareErr, streamStarted)
+					return
+				}
+				if active {
+					defer parent.Release()
+					c.Request = c.Request.WithContext(parent.GuardContext(c.Request.Context()))
+					recapForkAccountID = parent.AccountID()
+					body = updated
+					if err := parsedReq.ReplaceBody(body); err != nil {
+						h.errorResponse(c, 400, "invalid_request_error", "Invalid native fork body")
+						return
+					}
+					if err := h.gatewayService.RestoreManagedWrapperSessionBinding(c.Request.Context(), apiKey.GroupID, recapRoutingID, recapForkAccountID); err != nil {
+						h.handleWrapperManagedBeginError(c, err, streamStarted)
+						return
+					}
+				} else {
+					parent.Release()
+				}
+			} else {
+				parent.Release()
+			}
+		}
+	}
 	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
+	if recapRoutingID != "" {
+		sessionHash = recapRoutingID
+		mode := "stateless"
+		if recapForkAccountID > 0 {
+			mode = "native_fork"
+		}
+		reqLog.Info("wrapper.auxiliary_request", zap.String("request_class", "session_recap"),
+			zap.String("rule", "claude-recap-v2"), zap.String("session_mode", mode), zap.Int64("parent_account_id", recapForkAccountID))
+	}
 	if titleRoutingID != "" {
 		sessionHash = titleRoutingID
 		reqLog.Info("wrapper.auxiliary_request", zap.String("request_class", "session_title"),
@@ -441,7 +492,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// This is routing only; managed sessions and auxiliary request isolation
 	// retain their own identities. All clients use the same history proof.
 	if os.Getenv("SUB2API_WRAPPER_STATELESS_AFFINITY") == "1" && platform == service.PlatformAnthropic && !managedWrapperSession && autoManagedConversationID == "" &&
-		parsedReq.MetadataUserID == "" && titleRoutingID == "" && summaryRoutingID == "" && classifierRoutingID == "" {
+		parsedReq.MetadataUserID == "" && titleRoutingID == "" && summaryRoutingID == "" && classifierRoutingID == "" && recapRoutingID == "" {
 		statelessAffinity = h.gatewayService.ResolveWrapperStatelessAffinity(apiKey.ID, apiKey.GroupID, body)
 		if statelessAffinity != nil {
 			sessionKey = statelessAffinity.Key
@@ -535,6 +586,14 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 			}
 			account := selection.Account
+			if recapForkAccountID > 0 && (account.ID != recapForkAccountID || account.GetExtraString("wrapper_protocol") != "anthropic-messages-cli-v1") {
+				if selection.Acquired && selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				h.gatewayService.ReleaseAccountSession(context.Background(), account, sessionKey)
+				h.handleStreamingAwareError(c, 409, "session_affinity_error", "Native fork requires its parent Wrapper account", streamStarted)
+				return
+			}
 			setOpsSelectedAccount(c, account.ID, account.Platform)
 
 			// 检查请求拦截（预热请求、SUGGESTION MODE等）
@@ -941,6 +1000,14 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 			}
 			account := selection.Account
+			if recapForkAccountID > 0 && (account.ID != recapForkAccountID || account.GetExtraString("wrapper_protocol") != "anthropic-messages-cli-v1") {
+				if selection.Acquired && selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				h.gatewayService.ReleaseAccountSession(context.Background(), account, sessionKey)
+				h.handleStreamingAwareError(c, 409, "session_affinity_error", "Native fork requires its parent Wrapper account", streamStarted)
+				return
+			}
 			if (autoManagedExistingAccountID > 0 || service.WrapperStreamRecoveryActive(c)) && !managedWrapperSession && account.GetExtraString("wrapper_protocol") != "anthropic-messages-cli-v1" {
 				if selection.Acquired && selection.ReleaseFunc != nil {
 					selection.ReleaseFunc()

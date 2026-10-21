@@ -68,10 +68,12 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 	// Resolve the mapped model before choosing its thinking/tool protocol.
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
-	if err := validateClaudeOpus55Request(body, upstreamModel); err != nil {
+	body, err = prepareClaudeOpus55Request(body, upstreamModel)
+	if err != nil {
 		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err
 	}
+	applyOpus55ThinkingEffortToResponses(body, upstreamModel, &responsesReq)
 	responsesReq.Model = upstreamModel
 	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
 	if err != nil {

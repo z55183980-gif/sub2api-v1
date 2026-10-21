@@ -1,0 +1,11 @@
+{
+  "model": "claude-opus-5-5",
+  "stream": true,
+  "max_tokens": 256,
+  "system": [{"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."}],
+  "messages": [
+    {"role": "user", "content": "Synthetic regression context"},
+    {"role": "assistant", "content": [{"type": "text", "text": "WARM_OK"}]},
+    {"role": "user", "content": "The user stepped away and is coming back. Recap in under 40 words, 1-2 plain sentences, no markdown. Lead with the overall goal and current task, then the one next action. Skip root-cause narrative, fix internals, secondary to-dos, and em-dash tangents."}
+  ]
+}

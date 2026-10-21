@@ -523,3 +523,45 @@ func TestOpus55BridgeUsesMappedModelBeforeThinkingConversion(t *testing.T) {
 		}
 	}
 }
+
+func TestOpus55BridgeLegacyThinkingCompatibility(t *testing.T) {
+	for _, chat := range []bool{false, true} {
+		for _, disabled := range []bool{false, true} {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			body := `{"model":"public-opus","input":"hello","reasoning":{"effort":"xhigh"}}`
+			if chat {
+				body = `{"model":"public-opus","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"xhigh"}`
+			}
+			mode := "enabled"
+			if disabled {
+				mode = "disabled"
+			}
+			body = body[:len(body)-1] + `,"thinking":{"type":"` + mode + `","budget_tokens":4096},"output_config":{"effort":"high"}}`
+
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+			upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(namespaceToolAnthropicStream()))}}
+			svc := &GatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+			account := &Account{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "fixture-key", "model_mapping": map[string]any{"public-opus": "claude-opus-5-5"}}}
+			var err error
+			var result *ForwardResult
+			if chat {
+				result, err = svc.ForwardAsChatCompletions(context.Background(), c, account, []byte(body), nil)
+			} else {
+				result, err = svc.ForwardAsResponses(context.Background(), c, account, []byte(body), nil)
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.NotNil(t, upstream.lastReq)
+			require.Equal(t, "claude-opus-5-5", gjson.GetBytes(upstream.lastBody, "model").String())
+			require.Equal(t, "adaptive", gjson.GetBytes(upstream.lastBody, "thinking.type").String())
+			effort := "high"
+			if disabled {
+				effort = "low"
+			}
+			require.Equal(t, effort, gjson.GetBytes(upstream.lastBody, "output_config.effort").String())
+			require.False(t, gjson.GetBytes(upstream.lastBody, "thinking.budget_tokens").Exists())
+		}
+	}
+}

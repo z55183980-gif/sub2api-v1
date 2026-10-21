@@ -76,10 +76,12 @@ func (s *GatewayService) ForwardAsResponses(
 			mappedModel = normalized
 		}
 	}
-	if err := validateClaudeOpus55Request(body, mappedModel); err != nil {
+	body, err = prepareClaudeOpus55Request(body, mappedModel)
+	if err != nil {
 		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err
 	}
+	applyOpus55ThinkingEffortToResponses(body, mappedModel, &responsesReq)
 	responsesReq.Model = mappedModel
 	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
 	if err != nil {

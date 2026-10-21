@@ -37,6 +37,38 @@ func nativeAnthropicTestAccount() *Account {
 	}
 }
 
+func TestOpus55NativeAnthropicLegacyThinking(t *testing.T) {
+	for _, endpoint := range []string{"messages", "chat", "responses"} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", endpoint, stream), func(t *testing.T) {
+				body := []byte(fmt.Sprintf(`{"model":"public-opus","max_tokens":128,"stream":%t,"thinking":{"type":"disabled"},"output_config":{"effort":"max"},"messages":[{"role":"user","content":"hello"}],"input":"hello"}`, stream))
+				response := nativeAnthropicStreamResponse()
+				if endpoint == "messages" && !stream {
+					response = nativeAnthropicBufferedResponse()
+				}
+				upstream := &httpUpstreamRecorder{resp: response}
+				svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+				account := nativeAnthropicTestAccount()
+				account.Credentials["model_mapping"] = map[string]any{"public-opus": "claude-opus-5-5"}
+				c := adaptiveProtocolTestContext("/v1/"+endpoint, body)
+				var err error
+				switch endpoint {
+				case "messages":
+					_, err = svc.forwardAnthropicViaNativeAnthropicEndpoint(context.Background(), c, account, body, "")
+				case "chat":
+					_, err = svc.forwardChatCompletionsViaNativeAnthropic(context.Background(), c, account, body, "")
+				case "responses":
+					_, err = svc.forwardResponsesViaNativeAnthropic(context.Background(), c, account, body, "")
+				}
+				require.NoError(t, err)
+				require.Equal(t, "claude-opus-5-5", gjson.GetBytes(upstream.lastBody, "model").String())
+				require.Equal(t, "adaptive", gjson.GetBytes(upstream.lastBody, "thinking.type").String())
+				require.Equal(t, "low", gjson.GetBytes(upstream.lastBody, "output_config.effort").String())
+			})
+		}
+	}
+}
+
 func nativeAnthropicGLMTestAccount() *Account {
 	account := nativeAnthropicTestAccount()
 	account.Name = "zhipu-native"

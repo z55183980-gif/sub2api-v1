@@ -13,6 +13,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/tidwall/gjson"
@@ -568,24 +569,58 @@ func StripEmptyTextBlocks(body []byte) []byte {
 	return out
 }
 
-// validateClaudeOpus55Request rejects settings that the upstream cannot honor.
-// Call before OAuth mimicry can remove tool_choice or alter thinking defaults.
-func validateClaudeOpus55Request(body []byte, model string) error {
+// prepareClaudeOpus55Request accepts legacy thinking controls before validation.
+// Explicit disabled wins over any effort setting: low is the closest supported
+// mode. Enabled retains explicit effort and otherwise leaves the channel default.
+// Call before OAuth mimicry or protocol conversion can discard these controls.
+func prepareClaudeOpus55Request(body []byte, model string) ([]byte, error) {
 	if !claude.IsOpus55(model) {
-		return nil
+		return body, nil
 	}
-	switch gjson.GetBytes(body, "thinking.type").String() {
-	case "disabled", "enabled":
-		return fmt.Errorf("claude-opus-5-5 requires adaptive thinking; omit thinking or use thinking.type=adaptive and output_config.effort")
+	thinkingType := gjson.GetBytes(body, "thinking.type").String()
+	if thinkingType == "disabled" || thinkingType == "enabled" || thinkingType == "adaptive" {
+		var err error
+		if thinkingType != "adaptive" {
+			body, err = sjson.SetBytes(body, "thinking.type", "adaptive")
+			if err != nil {
+				return nil, fmt.Errorf("normalize Opus 5.5 thinking: %w", err)
+			}
+		}
+		body, err = sjson.DeleteBytes(body, "thinking.budget_tokens")
+		if err != nil {
+			return nil, fmt.Errorf("remove Opus 5.5 thinking budget: %w", err)
+		}
+		if thinkingType == "disabled" {
+			body, err = sjson.SetBytes(body, "output_config.effort", "low")
+			if err != nil {
+				return nil, fmt.Errorf("normalize Opus 5.5 effort: %w", err)
+			}
+		}
 	}
 	if gjson.GetBytes(body, "tool_choice").String() == "required" {
-		return fmt.Errorf("claude-opus-5-5 does not support forced tool_choice; use auto or none")
+		return nil, fmt.Errorf("claude-opus-5-5 does not support forced tool_choice; use auto or none")
 	}
 	switch gjson.GetBytes(body, "tool_choice.type").String() {
 	case "any", "tool", "function", "custom", "namespace":
-		return fmt.Errorf("claude-opus-5-5 does not support forced tool_choice; use auto or none")
+		return nil, fmt.Errorf("claude-opus-5-5 does not support forced tool_choice; use auto or none")
 	}
-	return nil
+	return body, nil
+}
+
+// OpenAI request structs omit Anthropic thinking extensions. Preserve the
+// compatibility effort after preparing the raw body and before conversion.
+func applyOpus55ThinkingEffortToResponses(body []byte, model string, req *apicompat.ResponsesRequest) {
+	if !claude.IsOpus55(model) {
+		return
+	}
+	effort := gjson.GetBytes(body, "output_config.effort").String()
+	if effort == "" {
+		return
+	}
+	if req.Reasoning == nil {
+		req.Reasoning = &apicompat.ResponsesReasoning{}
+	}
+	req.Reasoning.Effort = effort
 }
 
 // FilterThinkingBlocks removes thinking blocks from request body

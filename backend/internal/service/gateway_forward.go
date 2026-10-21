@@ -99,9 +99,15 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		validationModel = account.GetMappedModel(validationModel)
 	}
 	if account != nil && account.Platform == PlatformAnthropic && !account.IsBedrock() && account.Type != AccountTypeServiceAccount {
-		if err := validateClaudeOpus55Request(parsed.Body.Bytes(), validationModel); err != nil {
+		preparedBody, err := prepareClaudeOpus55Request(parsed.Body.Bytes(), validationModel)
+		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"type": "error", "error": gin.H{"type": "invalid_request_error", "message": err.Error()}})
 			return nil, err
+		}
+		if !bytes.Equal(preparedBody, parsed.Body.Bytes()) {
+			if err := parsed.ReplaceBody(preparedBody); err != nil {
+				return nil, err
+			}
 		}
 	}
 	// Anthropic Fast is requested with speed=fast rather than OpenAI's

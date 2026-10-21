@@ -57,6 +57,12 @@ func (s *OpenAIGatewayService) forwardAnthropicViaNativeAnthropicEndpoint(
 		}
 		body = rewritten
 	}
+	preparedBody, err := prepareClaudeOpus55Request(body, upstreamModel)
+	if err != nil {
+		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
+	body = preparedBody
 	if normalized, changed := NormalizeGLM53AnthropicThinking(body, upstreamModel); changed {
 		body = normalized
 	}
